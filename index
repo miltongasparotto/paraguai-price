@@ -1,0 +1,1854 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0e0e12" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Paraguai Price v2.5</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>html,body,#root{height:100%;margin:0;padding:0}body{background:#0e0e12}</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo, useRef, useEffect } = React;
+
+// ─── CONSTANTS ───────────────────────────────────────────────────────────────
+const CURRENCIES       = ["BRL","USD","EUR","JPY","GBP","PYG","ARS","CLP"];
+const CURRENCY_SYMBOLS = { BRL:"R$",USD:"$",EUR:"€",JPY:"¥",GBP:"£",PYG:"₲",ARS:"$",CLP:"$" };
+const CURRENCY_FLAGS   = { BRL:"🇧🇷",USD:"🇺🇸",EUR:"🇪🇺",JPY:"🇯🇵",GBP:"🇬🇧",PYG:"🇵🇾",ARS:"🇦🇷",CLP:"🇨🇱" };
+const CURRENCY_NAMES   = { BRL:"Real Brasileiro",USD:"Dólar Americano",EUR:"Euro",JPY:"Iene Japonês",GBP:"Libra Esterlina",PYG:"Guarani Paraguaio",ARS:"Peso Argentino",CLP:"Peso Chileno" };
+const ROUND_CURRENCIES = new Set(["JPY","PYG","ARS","CLP"]);
+
+// ─── SEED DATA ───────────────────────────────────────────────────────────────
+// Stores now have currency instead of country
+const SEED_STORES = [
+  { id:"st1", name:"Amazon BR",     currency:"BRL" },
+  { id:"st2", name:"Mercado Livre", currency:"BRL" },
+  { id:"st3", name:"Amazon US",     currency:"USD" },
+  { id:"st4", name:"Best Buy",      currency:"USD" },
+];
+
+// Products: variants:null means "simple" (no variant mode), variants:[] means variant mode
+const SEED_PRODUCTS = [
+  { id:"pr1", name:"SSD Samsung 870 EVO", category:"Armazenamento",
+    hasVariants: true,
+    variants:[
+      { id:"v1", label:"500GB", favorite:"e2",
+        prices:[
+          { id:"e1", storeId:"st1", amount:349,   currency:"BRL", link:"" },
+          { id:"e2", storeId:"st3", amount:54.99,  currency:"USD", link:"https://amazon.com" },
+        ]},
+      { id:"v2", label:"1TB", favorite:null,
+        prices:[
+          { id:"e3", storeId:"st1", amount:599,   currency:"BRL", link:"" },
+          { id:"e4", storeId:"st3", amount:89.99,  currency:"USD", link:"https://amazon.com" },
+        ]},
+    ]},
+  { id:"pr2", name:"AirPods Pro 2", category:"Áudio",
+    hasVariants: false,
+    prices:[
+      { id:"e5", storeId:"st1", amount:2299,   currency:"BRL", link:"" },
+      { id:"e6", storeId:"st3", amount:189.99,  currency:"USD", link:"https://amazon.com" },
+    ],
+    favorite:"e6",
+  },
+];
+
+// ─── UTILS ───────────────────────────────────────────────────────────────────
+function uid() { return Math.random().toString(36).slice(2,9); }
+
+function toBase(amount, currency, rates, base) {
+  if (currency === base) return amount;
+  const r = rates[currency];
+  if (!r) return 0;
+  return amount * r;
+}
+function fromBase(baseAmt, currency, rates, base) {
+  if (currency === base) return baseAmt;
+  const r = rates[currency];
+  if (!r) return 0;
+  return baseAmt / r;
+}
+
+function fmtAmt(v, currency) {
+  const s = CURRENCY_SYMBOLS[currency] || currency;
+  if (!v && v !== 0) return s + "\u00a0—";
+  if (ROUND_CURRENCIES.has(currency)) return s + "\u00a0" + Math.round(v).toLocaleString("pt-BR");
+  const [int, dec] = v.toFixed(2).split(".");
+  return s + "\u00a0" + int.replace(/\B(?=(\d{3})+(?!\d))/g, ".") + "," + dec;
+}
+
+function fmtInput(v) {
+  if (!v) return "";
+  const [int, dec] = parseFloat(v).toFixed(2).split(".");
+  return int.replace(/\B(?=(\d{3})+(?!\d))/g, ".") + "," + dec;
+}
+function parseInput(str) {
+  const cleaned = String(str || "").replace(/\./g, "").replace(",", ".");
+  const v = parseFloat(cleaned);
+  return isNaN(v) ? 0 : v;
+}
+
+function cheapestEntry(prices, rates, base) {
+  if (!prices || !prices.length) return null;
+  return prices.reduce((best, e) =>
+    toBase(e.amount, e.currency, rates, base) < toBase(best.amount, best.currency, rates, base) ? e : best
+  , prices[0]);
+}
+
+// Get all "price rows" from a product (unified simple/variant)
+function getPriceRows(prod) {
+  if (!prod.hasVariants) return [{ key: prod.id, label: null, prices: prod.prices || [], favorite: prod.favorite, isSimple: true }];
+  return (prod.variants || []).map(v => ({ key: v.id, label: v.label, prices: v.prices, favorite: v.favorite, isSimple: false, variantId: v.id }));
+}
+
+// ─── PRICE INPUT ─────────────────────────────────────────────────────────────
+function PriceInput({ value, onChange, className, placeholder }) {
+  const [raw, setRaw] = useState(() => value ? fmtInput(value) : "");
+
+  useEffect(() => {
+    if (!value) { setRaw(""); return; }
+    if (parseInput(raw) !== value) setRaw(fmtInput(value));
+  }, [value]);
+
+  function handleChange(e) {
+    let v = e.target.value.replace(/[^0-9,]/g, "");
+    setRaw(v);
+    onChange(parseInput(v));
+  }
+  function handleBlur() {
+    const n = parseInput(raw);
+    setRaw(n > 0 ? fmtInput(n) : "");
+  }
+
+  return (
+    <input className={className} inputMode="decimal"
+      placeholder={placeholder || "0,00"} value={raw}
+      onChange={handleChange} onBlur={handleBlur} />
+  );
+}
+
+// ─── THEME ───────────────────────────────────────────────────────────────────
+function buildStyles(dark) {
+  const t = dark ? {
+    bg:"#0e0e12",surf:"#17171d",surf2:"#1f1f28",border:"#2a2a38",
+    text:"#ebebf5",muted:"#6b6b88",accent:"#6c63ff",accentT:"rgba(108,99,255,0.15)",
+    green:"#34d399",greenT:"rgba(52,211,153,0.12)",red:"#f87171",redT:"rgba(248,113,113,0.12)",
+    gold:"#fbbf24",goldT:"rgba(251,191,36,0.13)",orange:"#fb923c",orangeT:"rgba(251,146,60,0.12)",
+  } : {
+    bg:"#f5f5f8",surf:"#ffffff",surf2:"#f0f0f5",border:"#e0e0ec",
+    text:"#111118",muted:"#8888aa",accent:"#5b52f0",accentT:"rgba(91,82,240,0.1)",
+    green:"#059669",greenT:"rgba(5,150,105,0.1)",red:"#dc2626",redT:"rgba(220,38,38,0.1)",
+    gold:"#d97706",goldT:"rgba(217,119,6,0.12)",orange:"#ea580c",orangeT:"rgba(234,88,12,0.1)",
+  };
+  return `
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+    :root{
+      --bg:${t.bg};--surf:${t.surf};--surf2:${t.surf2};--border:${t.border};
+      --text:${t.text};--muted:${t.muted};--accent:${t.accent};--accentT:${t.accentT};
+      --green:${t.green};--greenT:${t.greenT};--red:${t.red};--redT:${t.redT};
+      --gold:${t.gold};--goldT:${t.goldT};--orange:${t.orange};--orangeT:${t.orangeT};
+      --nav:68px;--safe:env(safe-area-inset-bottom,0px);
+    }
+    html,body{height:100%;background:var(--bg);overscroll-behavior:none}
+    body{color:var(--text);font-family:'Inter',sans-serif;font-size:15px;overflow-x:hidden}
+    ::-webkit-scrollbar{display:none}
+    input,select,button,a{font-family:inherit}
+    input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none}
+
+    .shell{display:flex;flex-direction:column;height:100dvh;max-width:430px;margin:0 auto;background:var(--bg)}
+    .topbar{background:var(--surf);border-bottom:1px solid var(--border);
+      padding:calc(env(safe-area-inset-top,12px)+12px) 16px 12px;
+      display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+    .topbar-title{font-size:18px;font-weight:700;letter-spacing:-0.3px}
+    .topbar-title span{color:var(--accent)}
+    .topbar-actions{display:flex;gap:8px;align-items:center}
+    .icon-round{height:36px;border-radius:50%;border:1px solid var(--border);background:var(--surf2);
+      display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}
+    .icon-round:active{transform:scale(.92)}
+    .scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
+    .page{padding:16px 16px calc(var(--nav)+24px+var(--safe))}
+    .bnav{position:fixed;bottom:0;left:50%;transform:translateX(-50%);
+      width:100%;max-width:430px;background:var(--surf);border-top:1px solid var(--border);
+      display:flex;padding-bottom:var(--safe);z-index:100}
+    .bnav-btn{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+      padding:10px 2px 8px;gap:3px;cursor:pointer;border:none;background:none;
+      color:var(--muted);font-size:10px;font-weight:500;min-height:var(--nav);transition:color .15s}
+    .bnav-btn.on{color:var(--accent)}
+    .bnav-btn .ico{font-size:21px;line-height:1}
+
+    /* cambio */
+    .cambio-strip{background:var(--surf);border:1px solid var(--border);border-radius:14px;
+      padding:14px 16px;margin-bottom:14px;display:flex;align-items:center;gap:12px}
+    .calc-btn{padding:9px 14px;border-radius:10px;background:var(--accentT);border:1px solid var(--accent);
+      color:var(--accent);font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+
+    /* product cards */
+    .prod-card{background:var(--surf);border:1px solid var(--border);border-radius:14px;margin-bottom:10px;overflow:hidden}
+    .prod-head{display:flex;align-items:center;gap:10px;padding:14px;cursor:pointer}
+    .prod-name{font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .prod-cat{font-size:12px;color:var(--muted);margin-top:1px}
+    .chevron{font-size:12px;color:var(--muted);transition:transform .2s;flex-shrink:0}
+    .chevron.open{transform:rotate(180deg)}
+
+    /* variant sections */
+    .variants-wrap{border-top:1px solid var(--border)}
+    .variant-row{border-bottom:1px solid var(--border)}
+    .variant-row:last-child{border-bottom:none}
+    .variant-head{display:flex;align-items:center;gap:8px;padding:12px 14px;cursor:pointer}
+    .variant-label{font-size:13px;font-weight:600;flex:1}
+    .vcaret{font-size:10px;color:var(--muted);transition:transform .2s}
+    .vcaret.open{transform:rotate(180deg)}
+    .prices-wrap{background:var(--surf2)}
+    .price-entry{display:flex;align-items:center;gap:10px;padding:11px 14px;border-top:1px solid var(--border)}
+    .pe-left{flex:1;min-width:0}
+    .pe-store{font-size:13px;font-weight:500;display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+    .pe-right{display:flex;gap:6px;align-items:center;flex-shrink:0}
+    .tag-cheap{font-size:10px;background:var(--greenT);color:var(--green);padding:3px 8px;border-radius:8px;font-weight:600}
+    .tag-fav-btn{font-size:18px;cursor:pointer;line-height:1;border:none;background:none}
+    .icon-btn{font-size:14px;color:var(--muted);cursor:pointer;padding:3px 4px;border:none;background:none;line-height:1}
+
+    /* add buttons — distinct styles */
+    .add-price-btn{display:flex;align-items:center;gap:6px;padding:11px 14px;
+      border-top:1px solid var(--border);font-size:13px;color:var(--accent);cursor:pointer;font-weight:500;
+      background:var(--surf2)}
+    .add-variant-btn{display:flex;align-items:center;gap:8px;padding:12px 14px;
+      border-top:1px solid var(--border);font-size:13px;cursor:pointer;font-weight:600;
+      color:var(--orange);background:var(--orangeT)}
+    .add-variant-btn .av-ico{width:22px;height:22px;border-radius:6px;background:var(--orange);
+      color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0}
+
+    .fab{position:fixed;right:max(16px,calc(50vw - 199px));
+      bottom:calc(var(--nav)+16px+var(--safe));width:50px;height:50px;border-radius:50%;
+      background:var(--accent);border:none;color:#fff;font-size:26px;cursor:pointer;
+      box-shadow:0 4px 18px rgba(108,99,255,.45);z-index:90;display:flex;align-items:center;justify-content:center}
+    .fab:active{transform:scale(.92)}
+
+    /* stores */
+    .store-list{padding:0 16px;display:flex;flex-direction:column;gap:10px;padding-bottom:calc(var(--nav)+80px+var(--safe))}
+    .store-card{background:var(--surf);border:1px solid var(--border);border-radius:14px;overflow:hidden}
+    .store-card-head{display:flex;align-items:center;gap:12px;padding:14px;cursor:pointer}
+    .store-card-flag{font-size:28px;line-height:1}
+    .store-card-info{flex:1;min-width:0}
+    .store-card-name{font-size:15px;font-weight:700}
+    .store-card-sub{font-size:12px;color:var(--muted);margin-top:2px}
+    .store-products-wrap{border-top:1px solid var(--border)}
+    .store-product-item{padding:13px 14px;border-bottom:1px solid var(--border);background:var(--surf2)}
+    .store-product-item:last-child{border-bottom:none}
+    .spi-name{font-size:14px;font-weight:600}
+    .spi-link{font-size:12px;color:var(--accent);font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-top:4px}
+    .add-to-store-btn{display:flex;align-items:center;gap:8px;padding:13px 14px;
+      font-size:13px;color:var(--accent);cursor:pointer;font-weight:600;background:var(--surf)}
+    .store-empty{padding:18px 14px;text-align:center;color:var(--muted);font-size:13px;background:var(--surf2)}
+
+    /* prod picker */
+    .prod-pick-list{max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:12px;margin-top:6px;background:var(--surf)}
+    .prod-pick-item{padding:11px 14px;cursor:pointer;border-bottom:1px solid var(--border);font-size:14px}
+    .prod-pick-item:last-child{border-bottom:none}
+    .prod-pick-item:active,.prod-pick-item.sel{background:var(--accentT);color:var(--accent)}
+
+    /* conv preview */
+    .conv-box{border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:8px}
+
+    /* inline store form */
+    .inline-store-form{background:var(--accentT);border:1.5px solid var(--accent);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:12px}
+
+    /* toast */
+    .toast-wrap{position:fixed;top:calc(env(safe-area-inset-top,0px)+72px);left:50%;transform:translateX(-50%);
+      z-index:300;display:flex;flex-direction:column;gap:8px;pointer-events:none;width:calc(100% - 32px);max-width:398px}
+    .toast{background:var(--surf);border:1px solid var(--border);border-radius:12px;padding:12px 14px;
+      display:flex;align-items:center;gap:10px;box-shadow:0 8px 24px rgba(0,0,0,.3);pointer-events:auto;
+      animation:toastIn .2s ease}
+    @keyframes toastIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
+    .toast-warn{border-color:var(--gold)}
+    .toast-ok{border-color:var(--green)}
+
+    /* report */
+    .rep-card{background:var(--surf);border:1px solid var(--border);border-radius:14px;margin-bottom:10px;overflow:hidden}
+    .rep-row{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--border)}
+    .rep-row:last-child{border-bottom:none}
+    .rep-row.winner{background:var(--greenT)}
+
+    /* config */
+    .cfg-rate-row{background:var(--surf);border:1px solid var(--border);border-radius:12px;
+      display:flex;align-items:center;gap:10px;padding:10px 14px;margin-bottom:8px}
+    .cfg-rate-input{width:120px;padding:7px 10px;background:var(--surf2);border:1px solid var(--border);
+      border-radius:8px;color:var(--text);font-size:14px;font-weight:600;text-align:right}
+    .cfg-rate-input:focus{outline:none;border-color:var(--accent)}
+    .cur-mode-btn{padding:10px 8px;border-radius:12px;border:1.5px solid var(--border);
+      background:var(--surf2);color:var(--text);cursor:pointer;text-align:center;line-height:1.3}
+    .cur-mode-btn.active{border-color:var(--accent);background:var(--accentT);color:var(--accent)}
+
+    /* sheets */
+    .overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:200;
+      display:flex;flex-direction:column;justify-content:flex-end;
+      backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
+    .sheet{background:var(--surf);border-top-left-radius:20px;border-top-right-radius:20px;
+      border-top:1px solid var(--border);max-height:92dvh;overflow-y:auto;
+      padding-bottom:calc(24px+var(--safe))}
+    .sheet-pip{width:32px;height:4px;background:var(--border);border-radius:2px;margin:12px auto 0}
+    .sheet-hd{padding:16px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+    .sheet-title{font-size:17px;font-weight:700}
+    .sheet-x{width:30px;height:30px;background:var(--surf2);border:none;border-radius:50%;
+      cursor:pointer;color:var(--muted);font-size:18px;display:flex;align-items:center;justify-content:center}
+    .sheet-body{padding:18px;display:flex;flex-direction:column;gap:14px}
+    .sheet-foot{padding:0 18px 4px;display:flex;gap:10px}
+    .fg{display:flex;flex-direction:column;gap:5px}
+    .fl{font-size:11px;color:var(--muted);font-weight:600;letter-spacing:.8px;text-transform:uppercase}
+    .fi,.fs{padding:13px 14px;background:var(--surf2);border:1.5px solid var(--border);
+      border-radius:12px;color:var(--text);font-size:15px;width:100%}
+    .fi:focus,.fs:focus{outline:none;border-color:var(--accent)}
+    .fs{appearance:none;-webkit-appearance:none;
+      background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='7'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23888' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+      background-repeat:no-repeat;background-position:right 13px center;padding-right:34px}
+    .fr{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .btn{display:flex;align-items:center;justify-content:center;gap:6px;padding:14px;
+      border-radius:12px;font-size:15px;font-weight:600;cursor:pointer;border:none;flex:1}
+    .btn:active{transform:scale(.97)}
+    .btn-p{background:var(--accent);color:#fff}
+    .btn-s{background:var(--surf2);color:var(--text);border:1px solid var(--border)}
+    .btn-d{background:var(--redT);color:var(--red);border:1px solid var(--red)}
+
+    /* radio toggle */
+    .radio-group{display:flex;gap:0;border:1px solid var(--border);border-radius:12px;overflow:hidden}
+    .radio-opt{flex:1;padding:10px 8px;font-size:13px;font-weight:600;cursor:pointer;border:none;
+      background:var(--surf2);color:var(--muted);text-align:center;transition:all .15s}
+    .radio-opt.on{background:var(--accent);color:#fff}
+
+    /* calc */
+    .calc-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+    .ck{padding:18px 8px;border-radius:12px;font-size:18px;font-weight:600;border:none;cursor:pointer;background:var(--surf2);color:var(--text)}
+    .ck:active{transform:scale(.92)}
+    .ck.op{background:var(--accentT);color:var(--accent)}
+    .ck.del{color:var(--muted)}
+    .ck.eq{background:var(--accent);color:#fff;grid-column:span 2}
+    .ck.zero{grid-column:span 2}
+
+    /* misc */
+    .fetch-btn{padding:9px 14px;border-radius:10px;background:var(--accentT);border:1px solid var(--accent);
+      color:var(--accent);font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px}
+    .fetch-btn:disabled{opacity:.5;cursor:not-allowed}
+    .spin{display:inline-block;animation:spin .8s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .empty{text-align:center;padding:48px 24px}
+    .empty-ico{font-size:44px;margin-bottom:12px}
+    .empty-t{font-size:17px;font-weight:700;margin-bottom:6px}
+    .empty-s{font-size:13px;color:var(--muted)}
+    .sec-hd{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:14px}
+    .sec-title{font-size:20px;font-weight:700;letter-spacing:-.4px}
+    .sec-sub{font-size:12px;color:var(--muted)}
+    .section-divider{font-size:11px;color:var(--muted);font-weight:600;letter-spacing:1px;
+      text-transform:uppercase;margin:6px 0 10px;padding-top:6px;border-top:1px solid var(--border)}
+  `;
+}
+
+// ─── STORE HELPERS ────────────────────────────────────────────────────────────
+function storeFlag(store) { return CURRENCY_FLAGS[store?.currency] || "🏪"; }
+function storeLabel(store) { return store ? `${storeFlag(store)} ${store.name}` : "—"; }
+
+// ─── TOAST ───────────────────────────────────────────────────────────────────
+function useToasts() {
+  const [toasts, setToasts] = useState([]);
+  function add(t) {
+    const id = uid();
+    setToasts(p => [...p, { id, ...t }]);
+    setTimeout(() => setToasts(p => p.filter(x => x.id !== id)), 4500);
+  }
+  function dismiss(id) { setToasts(p => p.filter(x => x.id !== id)); }
+  return { toasts, add, dismiss };
+}
+function ToastContainer({ toasts, dismiss }) {
+  return (
+    <div className="toast-wrap">
+      {toasts.map(t => (
+        <div key={t.id} className={`toast ${t.type==="warn"?"toast-warn":t.type==="ok"?"toast-ok":""}`}
+          onClick={() => dismiss(t.id)} style={{cursor:"pointer"}}>
+          <span style={{fontSize:20,flexShrink:0}}>{t.type==="warn"?"⚠️":"✅"}</span>
+          <div style={{flex:1}}>
+            <div style={{fontWeight:600,fontSize:13}}>{t.title}</div>
+            {t.body && <div style={{fontSize:12,color:"var(--muted)",marginTop:2}}>{t.body}</div>}
+          </div>
+          <span style={{fontSize:16,color:"var(--muted)"}}>×</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── SHEET ───────────────────────────────────────────────────────────────────
+function Sheet({ title, onClose, children, footer }) {
+  return (
+    <div className="overlay" onClick={e => e.target===e.currentTarget && onClose()}>
+      <div className="sheet">
+        <div className="sheet-pip" />
+        <div className="sheet-hd">
+          <div className="sheet-title">{title}</div>
+          <button className="sheet-x" onClick={onClose}>×</button>
+        </div>
+        <div className="sheet-body">{children}</div>
+        {footer && <div className="sheet-foot">{footer}</div>}
+      </div>
+    </div>
+  );
+}
+
+// ─── CONV PREVIEW ─────────────────────────────────────────────────────────────
+// ─── CAMERA SHEET ────────────────────────────────────────────────────────────
+function CameraSheet({ onCapture, onClose }) {
+  const videoRef  = useRef(null);
+  const canvasRef = useRef(null);
+  const [facingMode, setFacingMode] = useState("environment"); // rear by default
+  const [stream,     setStream]     = useState(null);
+  const [captured,   setCaptured]   = useState(null);
+  const [error,      setError]      = useState(null);
+
+  useEffect(() => {
+    startCamera(facingMode);
+    return () => stopStream();
+  }, [facingMode]);
+
+  function stopStream() {
+    setStream(prev => { if (prev) prev.getTracks().forEach(t => t.stop()); return null; });
+  }
+
+  async function startCamera(facing) {
+    stopStream();
+    setError(null);
+    setCaptured(null);
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: facing, width:{ideal:1280}, height:{ideal:720} }
+      });
+      setStream(s);
+      if (videoRef.current) { videoRef.current.srcObject = s; videoRef.current.play(); }
+    } catch(e) {
+      setError("Câmera não disponível: " + (e.message || e.name));
+    }
+  }
+
+  function capture() {
+    if (!videoRef.current || !canvasRef.current) return;
+    const v = videoRef.current;
+    const c = canvasRef.current;
+    c.width  = v.videoWidth;
+    c.height = v.videoHeight;
+    c.getContext("2d").drawImage(v, 0, 0);
+    setCaptured(c.toDataURL("image/jpeg", 0.85));
+    stopStream();
+  }
+
+  function flipCamera() {
+    setFacingMode(f => f === "environment" ? "user" : "environment");
+  }
+
+  function confirm() {
+    if (captured) { onCapture(captured); onClose(); }
+  }
+
+  function retake() {
+    setCaptured(null);
+    startCamera(facingMode);
+  }
+
+  return (
+    <div className="overlay" onClick={e => e.target===e.currentTarget && onClose()}>
+      <div className="sheet" style={{background:"#000"}}>
+        <div className="sheet-pip" style={{background:"#444"}} />
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 16px"}}>
+          <span style={{fontSize:16,fontWeight:700,color:"#fff"}}>📷 Câmera</span>
+          <button onClick={onClose} style={{background:"rgba(255,255,255,.15)",border:"none",borderRadius:"50%",
+            width:30,height:30,color:"#fff",fontSize:18,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+        </div>
+
+        {error ? (
+          <div style={{padding:"32px 20px",textAlign:"center",color:"#f87171"}}>
+            <div style={{fontSize:32,marginBottom:12}}>📵</div>
+            <div style={{fontSize:14}}>{error}</div>
+            <div style={{fontSize:12,color:"#888",marginTop:8}}>Use a opção Galeria para selecionar uma foto.</div>
+          </div>
+        ) : captured ? (
+          <div style={{padding:"0 16px 16px"}}>
+            <img src={captured} alt="preview" style={{width:"100%",borderRadius:12,maxHeight:320,objectFit:"cover"}} />
+            <div style={{display:"flex",gap:10,marginTop:12}}>
+              <button className="btn btn-s" style={{color:"#fff",background:"rgba(255,255,255,.1)",border:"1px solid rgba(255,255,255,.2)"}} onClick={retake}>🔄 Tirar novamente</button>
+              <button className="btn btn-p" onClick={confirm}>✓ Usar foto</button>
+            </div>
+          </div>
+        ) : (
+          <div style={{padding:"0 16px 16px"}}>
+            <div style={{position:"relative",borderRadius:12,overflow:"hidden",background:"#111",aspectRatio:"4/3"}}>
+              <video ref={videoRef} autoPlay playsInline muted
+                style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}} />
+              <canvas ref={canvasRef} style={{display:"none"}} />
+            </div>
+            <div style={{display:"flex",gap:10,marginTop:12,alignItems:"center"}}>
+              <button onClick={flipCamera}
+                style={{width:44,height:44,borderRadius:"50%",background:"rgba(255,255,255,.15)",border:"none",
+                  color:"#fff",fontSize:20,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                🔄
+              </button>
+              <button onClick={capture}
+                style={{flex:1,height:56,borderRadius:28,background:"#fff",border:"4px solid rgba(255,255,255,.4)",
+                  cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>
+                <div style={{width:40,height:40,borderRadius:"50%",background:"#222"}} />
+              </button>
+              <div style={{width:44}} />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ConvPreview({ amount, currency, rates, base }) {
+  if (!amount || currency === base) return null;
+  const rate = rates[currency];
+  if (!rate) return (
+    <div className="conv-box" style={{background:"var(--redT)",border:"1px solid var(--red)"}}>
+      <span>⚠️</span>
+      <div>
+        <div style={{fontSize:13,fontWeight:600,color:"var(--red)"}}>Taxa não configurada para {currency}</div>
+        <div style={{fontSize:10,color:"var(--muted)",marginTop:2}}>Salvo em {currency}. Configure na aba Conversão.</div>
+      </div>
+    </div>
+  );
+  return (
+    <div className="conv-box" style={{background:"var(--greenT)",border:"1px solid var(--green)"}}>
+      <span style={{fontSize:16,color:"var(--green)"}}>⇄</span>
+      <div>
+        <div style={{fontSize:15,fontWeight:700,color:"var(--green)"}}>{fmtAmt(toBase(amount,currency,rates,base),base)}</div>
+        <div style={{fontSize:11,color:"var(--muted)",marginTop:1}}>Salvo em {currency} · recalcula com câmbio</div>
+      </div>
+    </div>
+  );
+}
+
+// ─── INLINE STORE FORM ───────────────────────────────────────────────────────
+function InlineStoreForm({ onSave, onCancel }) {
+  const [name, setName]         = useState("");
+  const [currency, setCurrency] = useState("USD");
+  function save() {
+    if (!name.trim()) return;
+    onSave({ id: uid(), name: name.trim(), currency });
+  }
+  return (
+    <div className="inline-store-form">
+      <div style={{fontSize:12,fontWeight:700,color:"var(--accent)"}}>✨ Nova loja</div>
+      <div className="fg">
+        <label className="fl">Nome da loja</label>
+        <input className="fi" placeholder="Ex: Best Buy, Loja X..." value={name} onChange={e=>setName(e.target.value)} autoFocus />
+      </div>
+      <div className="fg">
+        <label className="fl">Moeda da loja</label>
+        <select className="fs" value={currency} onChange={e=>setCurrency(e.target.value)}>
+          {CURRENCIES.map(c => <option key={c} value={c}>{CURRENCY_FLAGS[c]} {c} — {CURRENCY_NAMES[c]}</option>)}
+        </select>
+      </div>
+      <div style={{display:"flex",gap:8}}>
+        <button className="btn btn-s" style={{fontSize:13,padding:"10px 0"}} onClick={onCancel}>Cancelar</button>
+        <button className="btn btn-p" style={{fontSize:13,padding:"10px 0"}} onClick={save} disabled={!name.trim()}>Criar loja</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── STORE SELECTOR ──────────────────────────────────────────────────────────
+function StoreSelector({ stores, setStores, value, onChange }) {
+  const [showNew, setShowNew] = useState(false);
+  function handleCreate(s) {
+    setStores(prev => [...prev, s]);
+    // Pass currency directly since state update is async
+    onChange(s.id, s.currency);
+    setShowNew(false);
+  }
+  return (
+    <>
+      <select className="fs" value={value} onChange={e => {
+        if (e.target.value === "__new__") setShowNew(true);
+        else onChange(e.target.value);
+      }}>
+        <option value="">Selecionar loja...</option>
+        {stores.map(s => <option key={s.id} value={s.id}>{storeFlag(s)} {s.name} ({s.currency})</option>)}
+        <option value="__new__">＋ Criar nova loja</option>
+      </select>
+      {showNew && <InlineStoreForm onSave={handleCreate} onCancel={() => setShowNew(false)} />}
+    </>
+  );
+}
+
+// ─── PRICE FIELDS ────────────────────────────────────────────────────────────
+function PriceFields({ entry, onChange, stores, setStores, rates, base }) {
+  // When store changes, pre-fill currency from store
+  // currencyOverride used when new store just created (not yet in stores array)
+  function handleStoreChange(storeId, currencyOverride) {
+    const store = stores.find(s => s.id === storeId);
+    const currency = currencyOverride || (store ? store.currency : entry.currency);
+    onChange({ ...entry, storeId, currency });
+  }
+  return (
+    <>
+      <div className="fg">
+        <label className="fl">Loja</label>
+        <StoreSelector stores={stores} setStores={setStores} value={entry.storeId} onChange={handleStoreChange} />
+      </div>
+      <div className="fr">
+        <div className="fg">
+          <label className="fl">Valor</label>
+          <PriceInput className="fi" value={entry.amount} onChange={v => onChange({...entry, amount:v})} />
+        </div>
+        <div className="fg">
+          <label className="fl">Moeda</label>
+          <select className="fs" value={entry.currency} onChange={e => onChange({...entry, currency:e.target.value})}>
+            {CURRENCIES.map(c => <option key={c} value={c}>{CURRENCY_FLAGS[c]} {c}</option>)}
+          </select>
+        </div>
+      </div>
+      <ConvPreview amount={entry.amount} currency={entry.currency} rates={rates} base={base} />
+      <div className="fg">
+        <label className="fl">Link de compra (opcional)</label>
+        <input className="fi" type="url" inputMode="url" placeholder="https://..."
+          value={entry.link} onChange={e => onChange({...entry, link:e.target.value})} />
+      </div>
+    </>
+  );
+}
+
+// ─── PRICE ROW DISPLAY ───────────────────────────────────────────────────────
+// Shows primary (base) and secondary (original currency) smartly
+function PriceDisplay({ entry, rates, base, isCheap, isFav, size="normal" }) {
+  const brl = toBase(entry.amount, entry.currency, rates, base);
+  const primaryColor = isFav ? "var(--gold)" : isCheap ? "var(--green)" : "var(--text)";
+  const showSecondary = entry.currency !== base && brl > 0;
+  const primarySize = size === "large" ? 22 : 15;
+
+  return (
+    <div>
+      <div style={{fontSize:primarySize, fontWeight:700, color:primaryColor, letterSpacing: size==="large"?-0.5:0}}>
+        {brl > 0 ? fmtAmt(brl, base) : <span style={{color:"var(--muted)",fontWeight:400,fontSize:13}}>— taxa não conf.</span>}
+      </div>
+      {showSecondary && (
+        <div style={{fontSize:12, color:"var(--muted)", marginTop:2}}>{fmtAmt(entry.amount, entry.currency)}</div>
+      )}
+    </div>
+  );
+}
+
+// ─── CALCULATOR ──────────────────────────────────────────────────────────────
+function Calculator({ rates, convCurrency, base, onClose }) {
+  const [display, setDisplay] = useState("0");
+  const [expr, setExpr]       = useState("");
+  const [mode, setMode]       = useState("toBRL");
+  const rate = rates[convCurrency] || 0;
+  function press(k) {
+    if (k==="AC"){setExpr("");setDisplay("0");return}
+    if (k==="⌫"){setDisplay(d=>d.slice(0,-1)||"0");return}
+    if (k==="="){
+      try{
+        const safe=display.replace(/×/g,"*").replace(/÷/g,"/").replace(/[^0-9+\-*/().]/g,"");
+        const r=Function('"use strict";return('+safe+')')();
+        setExpr(display+" =");
+        setDisplay(isFinite(r)?String(parseFloat(r.toFixed(6))):"Erro");
+      }catch{setDisplay("Erro")}
+      return;
+    }
+    if(["+","-","×","÷"].includes(k)){setDisplay(d=>(d==="0"||d==="Erro")?k:d+k);return}
+    if(k==="."){const p=display.split(/[+\-×÷]/);if(p[p.length-1].includes("."))return}
+    setDisplay(d=>(d==="0"||d==="Erro")?k:d+k);
+  }
+  const num=parseFloat(display)||0;
+  const converted=!rate?"— (configure a taxa)":mode==="toBRL"?fmtAmt(num*rate,base):fmtAmt(num/rate,convCurrency);
+  const keys=[
+    {k:"AC",cls:"del"},{k:"⌫",cls:"del"},{k:"÷",cls:"op"},{k:"×",cls:"op"},
+    {k:"7"},{k:"8"},{k:"9"},{k:"-",cls:"op"},
+    {k:"4"},{k:"5"},{k:"6"},{k:"+",cls:"op"},
+    {k:"1"},{k:"2"},{k:"3"},{k:"=",cls:"eq"},
+    {k:"0",cls:"zero"},{k:"."},
+  ];
+  return (
+    <Sheet title={`Calculadora · ${CURRENCY_FLAGS[convCurrency]} ${convCurrency}`} onClose={onClose}>
+      <div style={{display:"flex",gap:8,marginBottom:14}}>
+        <button className={`btn ${mode==="toBRL"?"btn-p":"btn-s"}`} style={{fontSize:13,padding:"10px 0"}} onClick={()=>setMode("toBRL")}>{convCurrency} → {base}</button>
+        <button className={`btn ${mode==="fromBRL"?"btn-p":"btn-s"}`} style={{fontSize:13,padding:"10px 0"}} onClick={()=>setMode("fromBRL")}>{base} → {convCurrency}</button>
+      </div>
+      <div style={{background:"var(--surf2)",border:"1px solid var(--border)",borderRadius:14,padding:16,marginBottom:14,textAlign:"right"}}>
+        <div style={{fontSize:12,color:"var(--muted)",minHeight:18}}>{expr}</div>
+        <div style={{fontSize:34,fontWeight:700,letterSpacing:-1,marginTop:4}}>{display}</div>
+        <div style={{fontSize:14,color:"var(--green)",marginTop:6,fontWeight:600}}>= {converted}</div>
+      </div>
+      <div className="calc-grid">
+        {keys.map(({k,cls=""},i)=>(
+          <button key={i} className={`ck ${cls}`} onClick={()=>press(k)}>{k}</button>
+        ))}
+      </div>
+    </Sheet>
+  );
+}
+
+// ─── DASHBOARD ───────────────────────────────────────────────────────────────
+function Dashboard({ products, stores, rates, convCurrency, base }) {
+  const [showCalc, setShowCalc] = useState(false);
+
+  const items = useMemo(() => {
+    const list = [];
+    products.forEach(prod => {
+      const rows = getPriceRows(prod);
+      rows.forEach(row => {
+        if (!row.prices.length) return;
+        const favEntry  = row.favorite ? row.prices.find(e => e.id === row.favorite) : null;
+        const cheapest  = cheapestEntry(row.prices, rates, base);
+        const entry     = favEntry || cheapest;
+        if (!entry) return;
+        const store     = stores.find(s => s.id === entry.storeId);
+        const brl       = toBase(entry.amount, entry.currency, rates, base);
+        const favIsExp  = !!(favEntry && cheapest && favEntry.id !== cheapest.id);
+        list.push({ prod, row, entry, store, brl, isFav: !!favEntry, favIsExp });
+      });
+    });
+    return list;
+  }, [products, stores, rates, base]);
+
+  const total = items.reduce((s, i) => s + i.brl, 0);
+
+  return (
+    <div className="page">
+      <div className="cambio-strip">
+        <div style={{fontSize:24}}>{CURRENCY_FLAGS[convCurrency]}</div>
+        <div style={{flex:1}}>
+          <div style={{fontSize:11,color:"var(--muted)",fontWeight:500}}>1 {convCurrency} hoje</div>
+          <div style={{fontSize:22,fontWeight:700,letterSpacing:-0.5}}>
+            {fmtAmt(rates[convCurrency]||0, base)} <span style={{fontSize:13,fontWeight:500,color:"var(--muted)"}}>{base}</span>
+          </div>
+        </div>
+        <button className="calc-btn" onClick={() => setShowCalc(true)}>🧮 Calc</button>
+      </div>
+
+      <div className="sec-hd">
+        <div>
+          <div className="sec-title">Minha Lista</div>
+          {items.length > 0 && <div className="sec-sub">Total ≈ {fmtAmt(total, base)}</div>}
+        </div>
+        <div style={{fontSize:12,color:"var(--muted)"}}>{items.length} {items.length===1?"item":"itens"}</div>
+      </div>
+
+      {items.length === 0 && (
+        <div className="empty"><div className="empty-ico">🛍️</div><div className="empty-t">Lista vazia</div><div className="empty-s">Adicione produtos na aba Produtos ou Lojas</div></div>
+      )}
+
+      {items.map(({ prod, row, entry, store, brl, isFav, favIsExp }) => {
+        const showSecondary = entry.currency !== base && brl > 0;
+        const priceColor = isFav ? "var(--gold)" : "var(--green)";
+        return (
+          <div key={prod.id+"-"+row.key} style={{background:"var(--surf)",border:"1px solid var(--border)",borderRadius:14,marginBottom:10,overflow:"hidden"}}>
+            <div style={{padding:"13px 14px 4px"}}>
+              <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
+                <div style={{fontSize:11,background:isFav?"var(--goldT)":"var(--greenT)",color:isFav?"var(--gold)":"var(--green)",padding:"3px 8px",borderRadius:20,fontWeight:700}}>
+                  {isFav ? "★ Favorito" : "💰 Mais barato"}
+                </div>
+                {favIsExp && <div style={{fontSize:10,color:"var(--muted)"}}>mais caro que o menor</div>}
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                {prod.photo && <img src={prod.photo} alt="" style={{width:28,height:28,borderRadius:6,objectFit:"cover",flexShrink:0}} />}
+                <div style={{fontSize:15,fontWeight:600}}>{prod.name}</div>
+              </div>
+              {row.label && <div style={{fontSize:12,color:"var(--muted)",marginTop:1}}>⎇ {row.label}</div>}
+            </div>
+            <div style={{padding:"6px 14px 13px"}}>
+              <div style={{fontSize:22,fontWeight:700,letterSpacing:-0.5,color:priceColor}}>
+                {brl > 0 ? fmtAmt(brl, base) : "—"}
+              </div>
+              {showSecondary && <div style={{fontSize:13,color:"var(--muted)",marginTop:2}}>{fmtAmt(entry.amount, entry.currency)}</div>}
+              <div style={{fontSize:12,color:"var(--muted)",marginTop:4,display:"flex",alignItems:"center",gap:4}}>
+                <span style={{width:6,height:6,borderRadius:"50%",background:"var(--green)",display:"inline-block"}}/>
+                {storeLabel(store)}
+                {entry.link && (
+                  <a href={entry.link} target="_blank" rel="noopener noreferrer"
+                    style={{color:"var(--accent)",fontSize:12,marginLeft:6,fontWeight:500,textDecoration:"none"}}>↗ Link</a>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+
+      {showCalc && <Calculator rates={rates} convCurrency={convCurrency} base={base} onClose={() => setShowCalc(false)} />}
+    </div>
+  );
+}
+
+// ─── PRODUCTS TAB ────────────────────────────────────────────────────────────
+function Products({ products, setProducts, stores, setStores, rates, base }) {
+  const [expanded,      setExpanded]      = useState(null);
+  const [expandedV,     setExpandedV]     = useState({});
+  const [showAddProd,   setShowAddProd]   = useState(false);
+  const [showEditProd,  setShowEditProd]  = useState(null);
+  const [showAddVar,    setShowAddVar]    = useState(null);
+  const [showEditVar,   setShowEditVar]   = useState(null);
+  const [showAddEntry,  setShowAddEntry]  = useState(null);
+  const [showEditEntry, setShowEditEntry] = useState(null);
+  const [showCamera,    setShowCamera]    = useState(null); // {prodId, onSave}
+
+  // New product form
+  const emptyEntry = () => ({ storeId:"", amount:0, currency:base, link:"" });
+  const [np, setNp] = useState({ name:"", category:"", hasVariants:false, variantLabel:"" });
+  const [npEntry, setNpEntry] = useState(() => ({ storeId:"", amount:0, currency:base, link:"" }));
+  const [newVar,    setNewVar]    = useState({ label:"" });
+  const [newEntry,  setNewEntry]  = useState(() => ({ storeId:"", amount:0, currency:base, link:"" }));
+
+  // ── product mutations ──
+  function addProd() {
+    if (!np.name.trim()) return;
+    if (np.hasVariants) {
+      // Create with variant mode, no prices yet — user adds via the UI
+      setProducts(p => [...p, { id:uid(), name:np.name.trim(), category:np.category.trim(), hasVariants:true, variants:[] }]);
+    } else {
+      // Simple product — if entry filled, add it
+      const prices = (npEntry.storeId && npEntry.amount) ? [{ id:uid(), ...npEntry }] : [];
+      setProducts(p => [...p, { id:uid(), name:np.name.trim(), category:np.category.trim(), hasVariants:false, prices, favorite:null }]);
+    }
+    setNp({ name:"", category:"", hasVariants:false, variantLabel:"" });
+    setNpEntry(emptyEntry());
+    setShowAddProd(false);
+  }
+  function saveProd(prod) {
+    setProducts(p => p.map(pr => {
+      if (pr.id !== prod.id) return pr;
+      const base = { ...pr, name:prod.name.trim(), category:prod.category.trim() };
+      // If converting from simple → variant mode
+      if (!pr.hasVariants && prod.hasVariants) {
+        const varLabel = prod.convertVariantLabel?.trim() || "Padrão";
+        return {
+          ...base,
+          hasVariants: true,
+          variants: [{ id:uid(), label:varLabel, prices:pr.prices||[], favorite:pr.favorite||null }],
+          prices: undefined,
+          favorite: undefined,
+        };
+      }
+      return base;
+    }));
+    setShowEditProd(null);
+  }
+  function delProd(id) {
+    setProducts(p => p.filter(pr => pr.id !== id));
+    if (expanded === id) setExpanded(null);
+    setShowEditProd(null);
+  }
+
+  // ── variant mutations ──
+  function addVar(prodId) {
+    if (!newVar.label.trim()) return;
+    setProducts(p => p.map(pr => pr.id !== prodId ? pr : { ...pr, variants:[...pr.variants, { id:uid(), label:newVar.label.trim(), prices:[], favorite:null }] }));
+    setNewVar({ label:"" }); setShowAddVar(null);
+  }
+  function saveVar(prodId, varId, label) {
+    setProducts(p => p.map(pr => pr.id !== prodId ? pr : { ...pr, variants:pr.variants.map(v => v.id !== varId ? v : {...v, label:label.trim()}) }));
+    setShowEditVar(null);
+  }
+  function delVar(prodId, varId) {
+    setProducts(p => p.map(pr => pr.id !== prodId ? pr : { ...pr, variants:pr.variants.filter(v => v.id !== varId) }));
+    setShowEditVar(null);
+  }
+
+  // ── entry mutations (works for both simple and variant) ──
+  function addEntry(ctx) {
+    if (!newEntry.storeId || !newEntry.amount) return;
+    const e = { id:uid(), ...newEntry };
+    if (ctx.variantId) {
+      setProducts(p => p.map(pr => pr.id !== ctx.prodId ? pr : { ...pr,
+        variants: pr.variants.map(v => v.id !== ctx.variantId ? v : { ...v, prices:[...v.prices,e] })
+      }));
+    } else {
+      setProducts(p => p.map(pr => pr.id !== ctx.prodId ? pr : { ...pr, prices:[...(pr.prices||[]),e] }));
+    }
+    setNewEntry(emptyEntry()); setShowAddEntry(null);
+  }
+  function saveEntry(ctx, entry) {
+    if (ctx.variantId) {
+      setProducts(p => p.map(pr => pr.id !== ctx.prodId ? pr : { ...pr,
+        variants: pr.variants.map(v => v.id !== ctx.variantId ? v : { ...v, prices:v.prices.map(e => e.id !== entry.id ? e : entry) })
+      }));
+    } else {
+      setProducts(p => p.map(pr => pr.id !== ctx.prodId ? pr : { ...pr, prices:(pr.prices||[]).map(e => e.id !== entry.id ? e : entry) }));
+    }
+    setShowEditEntry(null);
+  }
+  function delEntry(ctx, entryId) {
+    if (ctx.variantId) {
+      setProducts(p => p.map(pr => pr.id !== ctx.prodId ? pr : { ...pr,
+        variants: pr.variants.map(v => v.id !== ctx.variantId ? v : { ...v,
+          prices: v.prices.filter(e => e.id !== entryId),
+          favorite: v.favorite === entryId ? null : v.favorite
+        })
+      }));
+    } else {
+      setProducts(p => p.map(pr => pr.id !== ctx.prodId ? pr : { ...pr,
+        prices: (pr.prices||[]).filter(e => e.id !== entryId),
+        favorite: pr.favorite === entryId ? null : pr.favorite
+      }));
+    }
+  }
+  function toggleFav(ctx, entryId) {
+    if (ctx.variantId) {
+      setProducts(p => p.map(pr => pr.id !== ctx.prodId ? pr : { ...pr,
+        variants: pr.variants.map(v => v.id !== ctx.variantId ? v : { ...v, favorite: v.favorite===entryId?null:entryId })
+      }));
+    } else {
+      setProducts(p => p.map(pr => pr.id !== ctx.prodId ? pr : { ...pr, favorite: pr.favorite===entryId?null:entryId }));
+    }
+  }
+
+  // ── render price list ──
+  function renderPriceList(prices, fav, ctx) {
+    const cheap = cheapestEntry(prices, rates, base);
+    return (
+      <div className="prices-wrap">
+        {prices.map(e => {
+          const store   = stores.find(s => s.id === e.storeId);
+          const isCheap = cheap?.id === e.id && prices.length > 1;
+          const isFav   = fav === e.id;
+          return (
+            <div className="price-entry" key={e.id}>
+              <div className="pe-left">
+                <div className="pe-store">
+                  <span>{storeFlag(store)}</span>
+                  <span>{store?.name || "—"}</span>
+                  {isCheap && <span className="tag-cheap">✓ Menor</span>}
+                </div>
+                <div style={{marginTop:3}}>
+                  <PriceDisplay entry={e} rates={rates} base={base} isCheap={isCheap} isFav={isFav} />
+                </div>
+                {e.link && (
+                  <a href={e.link} target="_blank" rel="noopener noreferrer"
+                    style={{fontSize:11,color:"var(--accent)",marginTop:2,display:"block",textDecoration:"none"}}>↗ Ver produto</a>
+                )}
+              </div>
+              <div className="pe-right">
+                <button className="tag-fav-btn" onClick={() => toggleFav(ctx, e.id)}>{isFav?"★":"☆"}</button>
+                <button className="icon-btn" onClick={() => { setShowEditEntry({ ctx, entry:{...e} }); }}>✏️</button>
+                <button className="icon-btn" onClick={() => delEntry(ctx, e.id)}>🗑</button>
+              </div>
+            </div>
+          );
+        })}
+        <div className="add-price-btn" onClick={() => { setNewEntry(emptyEntry()); setShowAddEntry(ctx); }}>
+          <span style={{fontSize:16}}>＋</span> Adicionar loja / preço
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page">
+      <div className="sec-hd">
+        <div className="sec-title">Produtos</div>
+        <div className="sec-sub">{products.length} {products.length===1?"item":"itens"}</div>
+      </div>
+
+      {products.length === 0 && (
+        <div className="empty"><div className="empty-ico">📦</div><div className="empty-t">Nenhum produto</div><div className="empty-s">Toque em + para adicionar</div></div>
+      )}
+
+      {products.map(prod => {
+        const isExp = expanded === prod.id;
+        // Summary: cheapest across all prices/variants
+        const allPrices = prod.hasVariants
+          ? (prod.variants||[]).flatMap(v => v.prices)
+          : (prod.prices||[]);
+        const cheapAll = cheapestEntry(allPrices, rates, base);
+        const cheapBRL = cheapAll ? toBase(cheapAll.amount, cheapAll.currency, rates, base) : null;
+
+        return (
+          <div className="prod-card" key={prod.id}>
+            <div className="prod-head" onClick={() => setExpanded(isExp ? null : prod.id)}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  {prod.photo && <img src={prod.photo} alt="" style={{width:32,height:32,borderRadius:8,objectFit:"cover",flexShrink:0}} />}
+                  <div className="prod-name">{prod.name}</div>
+                  <span style={{fontSize:10,background:prod.hasVariants?"var(--orangeT)":"var(--accentT)",color:prod.hasVariants?"var(--orange)":"var(--accent)",padding:"2px 7px",borderRadius:10,fontWeight:700,flexShrink:0}}>
+                    {prod.hasVariants ? "⎇ vars" : "simples"}
+                  </span>
+                </div>
+                {prod.category && <div className="prod-cat">{prod.category}</div>}
+              </div>
+              {cheapBRL !== null && (
+                <div style={{fontSize:13,fontWeight:700,color:"var(--green)",flexShrink:0,marginRight:4}}>{fmtAmt(cheapBRL,base)}</div>
+              )}
+              <div onClick={e => { e.stopPropagation(); setShowEditProd({...prod,_converting:false,_origPrices:prod.prices||[]}); }} style={{padding:"4px 6px",color:"var(--muted)",fontSize:14,cursor:"pointer"}}>✏️</div>
+              <span className={"chevron"+(isExp?" open":"")}>▾</span>
+            </div>
+
+            {isExp && (
+              prod.hasVariants ? (
+                // ── VARIANT MODE ──
+                <div className="variants-wrap">
+                  {(prod.variants||[]).map(v => {
+                    const vExp = !!expandedV[v.id];
+                    const cheap = cheapestEntry(v.prices, rates, base);
+                    const cheapBRL = cheap ? toBase(cheap.amount, cheap.currency, rates, base) : null;
+                    const fav = v.favorite ? v.prices.find(e => e.id === v.favorite) : null;
+                    const favIsExp = !!(fav && cheap && fav.id !== cheap.id);
+                    const displayEntry = fav || cheap;
+                    const displayBRL = displayEntry ? toBase(displayEntry.amount, displayEntry.currency, rates, base) : null;
+
+                    return (
+                      <div className="variant-row" key={v.id}>
+                        <div className="variant-head" onClick={() => setExpandedV(s => ({...s,[v.id]:!s[v.id]}))}>
+                          <div style={{fontSize:13}}>⎇</div>
+                          <div className="variant-label">{v.label}</div>
+                          {displayBRL !== null && (
+                            <div style={{fontSize:13,fontWeight:700,color:fav?"var(--gold)":"var(--green)"}}>
+                              {fmtAmt(displayBRL, base)}
+                              {favIsExp && <span style={{fontSize:10,fontWeight:400,color:"var(--muted)",marginLeft:4}}>★</span>}
+                            </div>
+                          )}
+                          <div style={{fontSize:11,color:"var(--muted)"}}>{v.prices.length}lj</div>
+                          <div onClick={e => { e.stopPropagation(); setShowEditVar({prodId:prod.id,variant:{...v}}); }} style={{padding:"2px 5px",color:"var(--muted)",fontSize:13,cursor:"pointer"}}>✏️</div>
+                          <span className={"vcaret"+(vExp?" open":"")}>▾</span>
+                        </div>
+                        {vExp && renderPriceList(v.prices, v.favorite, { prodId:prod.id, variantId:v.id })}
+                      </div>
+                    );
+                  })}
+
+                  {/* Add variant — distinct orange style */}
+                  <div className="add-variant-btn" onClick={() => { setNewVar({label:""}); setShowAddVar(prod.id); }}>
+                    <div className="av-ico">⎇</div>
+                    Nova variação
+                  </div>
+
+                  <div style={{padding:"10px 14px",display:"flex",justifyContent:"flex-end"}}>
+                    <span style={{fontSize:12,color:"var(--red)",cursor:"pointer"}} onClick={() => delProd(prod.id)}>🗑 Remover produto</span>
+                  </div>
+                </div>
+              ) : (
+                // ── SIMPLE MODE ──
+                <div className="variants-wrap">
+                  {renderPriceList(prod.prices||[], prod.favorite, { prodId:prod.id, variantId:null })}
+                  <div style={{padding:"10px 14px",display:"flex",justifyContent:"flex-end"}}>
+                    <span style={{fontSize:12,color:"var(--red)",cursor:"pointer"}} onClick={() => delProd(prod.id)}>🗑 Remover produto</span>
+                  </div>
+                </div>
+              )
+            )}
+          </div>
+        );
+      })}
+
+      <button className="fab" onClick={() => { setNp({name:"",category:"",hasVariants:false}); setNpEntry(emptyEntry()); setShowAddProd(true); }}>＋</button>
+
+      {/* ── ADD PRODUCT ── */}
+      {showAddProd && (
+        <Sheet title="Novo Produto" onClose={() => setShowAddProd(false)}
+          footer={<><button className="btn btn-s" onClick={() => setShowAddProd(false)}>Cancelar</button><button className="btn btn-p" onClick={addProd} disabled={!np.name.trim()} style={{opacity:np.name.trim()?1:.5}}>Adicionar</button></>}>
+          <div className="fg"><label className="fl">Nome</label><input className="fi" placeholder="Ex: iPhone 16 Pro" value={np.name} onChange={e=>setNp(p=>({...p,name:e.target.value}))} autoFocus /></div>
+          <div className="fg"><label className="fl">Categoria (opcional)</label><input className="fi" placeholder="Ex: Smartphones" value={np.category} onChange={e=>setNp(p=>({...p,category:e.target.value}))} /></div>
+
+          {/* Type toggle */}
+          <div className="fg">
+            <label className="fl">Tipo</label>
+            <div className="radio-group">
+              <button className={`radio-opt ${!np.hasVariants?"on":""}`} onClick={() => setNp(p=>({...p,hasVariants:false}))}>
+                📦 Produto simples
+              </button>
+              <button className={`radio-opt ${np.hasVariants?"on":""}`} onClick={() => setNp(p=>({...p,hasVariants:true}))}>
+                ⎇ Com variações
+              </button>
+            </div>
+          </div>
+
+          {!np.hasVariants ? (
+            <>
+              <div className="section-divider">Preço inicial (opcional)</div>
+              <PriceFields entry={npEntry} onChange={setNpEntry} stores={stores} setStores={setStores} rates={rates} base={base} />
+            </>
+          ) : (
+            <div style={{background:"var(--orangeT)",border:"1px solid var(--orange)",borderRadius:12,padding:"12px 14px"}}>
+              <div style={{fontSize:13,color:"var(--orange)",fontWeight:600}}>⎇ Modo variações ativo</div>
+              <div style={{fontSize:12,color:"var(--muted)",marginTop:4}}>Após criar o produto, adicione variações e preços por dentro dele.</div>
+            </div>
+          )}
+        </Sheet>
+      )}
+
+      {/* ── EDIT PRODUCT ── */}
+      {showEditProd && (
+        <Sheet title="Editar Produto" onClose={() => setShowEditProd(null)}
+          footer={<>
+            <button className="btn btn-d" style={{flex:"none",padding:"14px 16px"}} onClick={() => delProd(showEditProd.id)}>🗑</button>
+            <button className="btn btn-s" onClick={() => setShowEditProd(null)}>Cancelar</button>
+            <button className="btn btn-p" onClick={() => saveProd(showEditProd)}>Salvar</button>
+          </>}>
+          <div className="fg"><label className="fl">Nome</label><input className="fi" value={showEditProd.name} onChange={e=>setShowEditProd(p=>({...p,name:e.target.value}))} autoFocus /></div>
+          <div className="fg"><label className="fl">Categoria</label><input className="fi" value={showEditProd.category} onChange={e=>setShowEditProd(p=>({...p,category:e.target.value}))} /></div>
+
+          {/* Photo picker */}
+          <div className="fg">
+            <label className="fl">Foto do produto (opcional)</label>
+            <div style={{display:"flex",gap:8}}>
+              <button type="button" className="btn btn-s" style={{flex:1,fontSize:13,padding:"10px 0"}}
+                onClick={() => { setShowCamera({prodId:showEditProd.id, onSave:(url)=>setShowEditProd(p=>({...p,photo:url}))}); }}>
+                📷 Câmera
+              </button>
+              <label className="btn btn-s" style={{flex:1,fontSize:13,padding:"10px 0",cursor:"pointer",justifyContent:"center",display:"flex",alignItems:"center",gap:6}}>
+                🖼 Galeria
+                <input type="file" accept="image/*" style={{display:"none"}} onChange={e=>{
+                  const f=e.target.files[0];
+                  if(!f)return;
+                  const reader=new FileReader();
+                  reader.onload=(ev)=>setShowEditProd(p=>({...p,photo:ev.target.result}));
+                  reader.readAsDataURL(f);
+                }} />
+              </label>
+            </div>
+            {showEditProd.photo && (
+              <div style={{position:"relative",marginTop:4}}>
+                <img src={showEditProd.photo} alt="" style={{width:"100%",borderRadius:10,maxHeight:160,objectFit:"cover"}} />
+                <button onClick={()=>setShowEditProd(p=>({...p,photo:null}))}
+                  style={{position:"absolute",top:6,right:6,background:"rgba(0,0,0,.6)",border:"none",borderRadius:"50%",
+                    width:26,height:26,color:"#fff",cursor:"pointer",fontSize:14,display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+              </div>
+            )}
+          </div>
+
+          {/* Type info / conversion */}
+          {showEditProd.hasVariants ? (
+            <div style={{background:"var(--orangeT)",border:"1px solid var(--orange)",borderRadius:12,padding:"12px 14px"}}>
+              <div style={{fontSize:13,color:"var(--orange)",fontWeight:600}}>⎇ Produto com variações</div>
+              <div style={{fontSize:12,color:"var(--muted)",marginTop:4}}>Adicione novas variações abrindo o produto na lista.</div>
+            </div>
+          ) : (
+            <>
+              <div style={{background:"var(--surf2)",borderRadius:12,padding:"12px 14px",border:"1px solid var(--border)"}}>
+                <div style={{fontSize:13,fontWeight:600,marginBottom:4}}>📦 Produto simples</div>
+                <div style={{fontSize:12,color:"var(--muted)"}}>Converter para modo de variações?</div>
+                {!showEditProd.hasVariants && !showEditProd._converting && (
+                  <button type="button"
+                    style={{marginTop:8,padding:"7px 14px",borderRadius:8,background:"var(--orangeT)",border:"1px solid var(--orange)",
+                      color:"var(--orange)",fontSize:12,fontWeight:600,cursor:"pointer"}}
+                    onClick={()=>setShowEditProd(p=>({...p,_converting:true,hasVariants:true,convertVariantLabel:"Padrão"}))}>
+                    ⎇ Converter para variações
+                  </button>
+                )}
+              </div>
+              {showEditProd._converting && (
+                <div style={{background:"var(--orangeT)",border:"1px solid var(--orange)",borderRadius:12,padding:"12px 14px"}}>
+                  <div style={{fontSize:13,color:"var(--orange)",fontWeight:600,marginBottom:8}}>⎇ Conversão para variações</div>
+                  <div className="fg">
+                    <label className="fl">Nome da primeira variação</label>
+                    <input className="fi" placeholder="Ex: Padrão, 128GB, Preto..."
+                      value={showEditProd.convertVariantLabel||""}
+                      onChange={e=>setShowEditProd(p=>({...p,convertVariantLabel:e.target.value}))} />
+                  </div>
+                  <div style={{fontSize:11,color:"var(--muted)",marginTop:8}}>
+                    Os {(showEditProd._origPrices||[]).length} preços cadastrados serão movidos para essa variação.
+                  </div>
+                  <button type="button"
+                    style={{marginTop:8,padding:"6px 12px",borderRadius:8,background:"var(--surf2)",border:"1px solid var(--border)",
+                      color:"var(--muted)",fontSize:12,cursor:"pointer"}}
+                    onClick={()=>setShowEditProd(p=>({...p,_converting:false,hasVariants:false,convertVariantLabel:""}))}>
+                    Cancelar conversão
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </Sheet>
+      )}
+
+      {/* ── ADD VARIANT ── */}
+      {showAddVar && (
+        <Sheet title="Nova Variação" onClose={() => setShowAddVar(null)}
+          footer={<><button className="btn btn-s" onClick={() => setShowAddVar(null)}>Cancelar</button><button className="btn btn-p" onClick={() => addVar(showAddVar)}>Adicionar</button></>}>
+          <div className="fg"><label className="fl">Descrição</label><input className="fi" placeholder="Ex: 500GB, 1TB, Azul..." value={newVar.label} onChange={e=>setNewVar({label:e.target.value})} autoFocus /></div>
+        </Sheet>
+      )}
+
+      {/* ── EDIT VARIANT ── */}
+      {showEditVar && (
+        <Sheet title="Editar Variação" onClose={() => setShowEditVar(null)}
+          footer={<>
+            <button className="btn btn-d" style={{flex:"none",padding:"14px 16px"}} onClick={() => delVar(showEditVar.prodId, showEditVar.variant.id)}>🗑</button>
+            <button className="btn btn-s" onClick={() => setShowEditVar(null)}>Cancelar</button>
+            <button className="btn btn-p" onClick={() => saveVar(showEditVar.prodId, showEditVar.variant.id, showEditVar.variant.label)}>Salvar</button>
+          </>}>
+          <div className="fg"><label className="fl">Descrição</label><input className="fi" value={showEditVar.variant.label} onChange={e=>setShowEditVar(s=>({...s,variant:{...s.variant,label:e.target.value}}))} autoFocus /></div>
+        </Sheet>
+      )}
+
+      {/* ── ADD ENTRY ── */}
+      {showAddEntry && (
+        <Sheet title="Adicionar Preço" onClose={() => setShowAddEntry(null)}
+          footer={<><button className="btn btn-s" onClick={() => setShowAddEntry(null)}>Cancelar</button><button className="btn btn-p" onClick={() => addEntry(showAddEntry)}>Salvar</button></>}>
+          <PriceFields entry={newEntry} onChange={setNewEntry} stores={stores} setStores={setStores} rates={rates} base={base} />
+        </Sheet>
+      )}
+
+      {/* ── EDIT ENTRY ── */}
+      {showEditEntry && (
+        <Sheet title="Editar Preço" onClose={() => setShowEditEntry(null)}
+          footer={<>
+            <button className="btn btn-d" style={{flex:"none",padding:"14px 16px"}} onClick={() => { delEntry(showEditEntry.ctx, showEditEntry.entry.id); setShowEditEntry(null); }}>🗑</button>
+            <button className="btn btn-s" onClick={() => setShowEditEntry(null)}>Cancelar</button>
+            <button className="btn btn-p" onClick={() => saveEntry(showEditEntry.ctx, showEditEntry.entry)}>Salvar</button>
+          </>}>
+          <PriceFields entry={showEditEntry.entry} onChange={e => setShowEditEntry(s => ({...s, entry:e}))} stores={stores} setStores={setStores} rates={rates} base={base} />
+        </Sheet>
+      )}
+      {/* ── CAMERA ── */}
+      {showCamera && (
+        <CameraSheet
+          onCapture={(url) => {
+            if (showCamera.onSave) showCamera.onSave(url);
+            else setProducts(p => p.map(pr => pr.id !== showCamera.prodId ? pr : {...pr, photo:url}));
+            setShowCamera(null);
+          }}
+          onClose={() => setShowCamera(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── STORES TAB ──────────────────────────────────────────────────────────────
+function StoresTab({ products, setProducts, stores, setStores, rates, convCurrency, base, addToast }) {
+  const [expandedStore,  setExpandedStore]  = useState(null);
+  const [showAddStore,   setShowAddStore]   = useState(false);
+  const [showEditStore,  setShowEditStore]  = useState(null);
+  const [showAddProduct, setShowAddProduct] = useState(null);
+  const [newStore, setNewStore] = useState({ name:"", currency:"USD" });
+
+  // add-product-to-store state
+  const [apMode,    setApMode]    = useState("existing");
+  const [apSearch,  setApSearch]  = useState("");
+  const [apProd,    setApProd]    = useState(null);
+  const [apVariant, setApVariant] = useState(null);
+  const [apNewVarL, setApNewVarL] = useState("");
+  const [apNP,      setApNP]      = useState({ name:"", category:"", varLabel:"" });
+  const [apEntry,   setApEntry]   = useState({ amount:0, currency:"USD", link:"" });
+
+  function addStore() {
+    if (!newStore.name.trim()) return;
+    setStores(s => [...s, { id:uid(), name:newStore.name.trim(), currency:newStore.currency }]);
+    setNewStore({ name:"", currency:"USD" }); setShowAddStore(false);
+  }
+  function saveStore(st) {
+    setStores(s => s.map(x => x.id !== st.id ? x : { ...x, name:st.name.trim(), currency:st.currency }));
+    setShowEditStore(null);
+  }
+  function delStore(id) {
+    setStores(s => s.filter(x => x.id !== id));
+    if (expandedStore === id) setExpandedStore(null);
+  }
+
+  function openAdd(storeId) {
+    const store = stores.find(s => s.id === storeId);
+    setShowAddProduct(storeId);
+    setApMode("existing"); setApSearch(""); setApProd(null); setApVariant(null);
+    setApNewVarL(""); setApNP({ name:"", category:"", varLabel:"" });
+    // Pre-fill currency from store
+    setApEntry({ amount:0, currency: store?.currency || "USD", link:"" });
+  }
+
+  function getStoreItems(storeId) {
+    const items = [];
+    products.forEach(prod => {
+      if (!prod.hasVariants) {
+        (prod.prices||[]).filter(e => e.storeId === storeId).forEach(e => {
+          items.push({ prod, variant:null, entry:e });
+        });
+      } else {
+        (prod.variants||[]).forEach(v => {
+          v.prices.filter(e => e.storeId === storeId).forEach(e => {
+            items.push({ prod, variant:v, entry:e });
+          });
+        });
+      }
+    });
+    return items;
+  }
+
+  function delStoreEntry(prod, variant, entryId) {
+    if (!variant) {
+      setProducts(p => p.map(pr => pr.id !== prod.id ? pr : { ...pr, prices:(pr.prices||[]).filter(e => e.id !== entryId), favorite:pr.favorite===entryId?null:pr.favorite }));
+    } else {
+      setProducts(p => p.map(pr => pr.id !== prod.id ? pr : { ...pr, variants:pr.variants.map(v => v.id !== variant.id ? v : { ...v, prices:v.prices.filter(e => e.id !== entryId), favorite:v.favorite===entryId?null:v.favorite }) }));
+    }
+  }
+
+  const filteredProds = useMemo(() => {
+    if (!apSearch.trim()) return products;
+    const q = apSearch.toLowerCase();
+    return products.filter(p => p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q));
+  }, [products, apSearch]);
+
+  function handleSave() {
+    const storeId = showAddProduct;
+    if (!apEntry.amount) return;
+    const entryObj = { id:uid(), storeId, amount:apEntry.amount, currency:apEntry.currency, link:apEntry.link };
+
+    if (apEntry.currency !== base && !rates[apEntry.currency]) {
+      addToast({ type:"warn", title:"Taxa não configurada", body:`Valor salvo em ${apEntry.currency}. Configure na aba Conversão.` });
+    }
+
+    if (apMode === "existing" && apProd) {
+      if (!apProd.hasVariants) {
+        setProducts(p => p.map(pr => pr.id !== apProd.id ? pr : { ...pr, prices:[...(pr.prices||[]),entryObj] }));
+      } else if (apVariant) {
+        setProducts(p => p.map(pr => pr.id !== apProd.id ? pr : { ...pr, variants:pr.variants.map(v => v.id !== apVariant.id ? v : { ...v, prices:[...v.prices,entryObj] }) }));
+      } else {
+        const newV = { id:uid(), label:apNewVarL.trim()||"Padrão", favorite:null, prices:[entryObj] };
+        setProducts(p => p.map(pr => pr.id !== apProd.id ? pr : { ...pr, variants:[...pr.variants,newV] }));
+      }
+    } else if (apMode === "new" && apNP.name.trim()) {
+      const isVar = apNP.varLabel.trim() !== "";
+      const newP = {
+        id:uid(), name:apNP.name.trim(), category:apNP.category.trim(),
+        hasVariants: isVar,
+        ...(isVar
+          ? { variants:[{ id:uid(), label:apNP.varLabel.trim(), favorite:null, prices:[entryObj] }] }
+          : { prices:[entryObj], favorite:null }
+        )
+      };
+      setProducts(p => [...p, newP]);
+    }
+    setShowAddProduct(null);
+  }
+
+  const storeForSheet = stores.find(s => s.id === showAddProduct);
+  const canSave = apEntry.amount && (
+    (apMode === "existing" && apProd && (!apProd.hasVariants || apVariant || apNewVarL.trim())) ||
+    (apMode === "new" && apNP.name.trim())
+  );
+
+  return (
+    <div>
+      <div style={{padding:"16px 16px 10px"}}>
+        <div className="sec-hd">
+          <div className="sec-title">Lojas</div>
+          <div className="sec-sub">{stores.length} {stores.length===1?"loja":"lojas"}</div>
+        </div>
+      </div>
+
+      {stores.length === 0 && <div className="empty"><div className="empty-ico">🏪</div><div className="empty-t">Nenhuma loja</div><div className="empty-s">Toque em + para adicionar</div></div>}
+
+      <div className="store-list">
+        {stores.map(st => {
+          const isExp  = expandedStore === st.id;
+          const items  = getStoreItems(st.id);
+          return (
+            <div className="store-card" key={st.id}>
+              <div className="store-card-head" onClick={() => setExpandedStore(isExp ? null : st.id)}>
+                <div className="store-card-flag">{storeFlag(st)}</div>
+                <div className="store-card-info">
+                  <div className="store-card-name">{st.name}</div>
+                  <div className="store-card-sub">{st.currency} · {items.length} {items.length===1?"produto":"produtos"}</div>
+                </div>
+                <div onClick={e => e.stopPropagation()} style={{display:"flex",gap:2}}>
+                  <button className="icon-btn" style={{padding:"4px 6px"}} onClick={() => setShowEditStore({...st})}>✏️</button>
+                  <button className="icon-btn" style={{padding:"4px 6px",color:"var(--red)"}} onClick={() => delStore(st.id)}>🗑</button>
+                </div>
+                <span className={"chevron"+(isExp?" open":"")} style={{marginLeft:2}}>▾</span>
+              </div>
+
+              {isExp && (
+                <div className="store-products-wrap">
+                  {items.length === 0 ? (
+                    <div className="store-empty">Nenhum produto cadastrado</div>
+                  ) : items.map(({ prod, variant, entry }) => {
+                    const brl = toBase(entry.amount, entry.currency, rates, base);
+                    const showSec = entry.currency !== base && brl > 0;
+                    return (
+                      <div className="store-product-item" key={entry.id}>
+                        <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between"}}>
+                          <div style={{display:"flex",alignItems:"center",gap:8}}>
+                            {prod.photo && <img src={prod.photo} alt="" style={{width:28,height:28,borderRadius:6,objectFit:"cover",flexShrink:0}} />}
+                            <div>
+                              <div className="spi-name">{prod.name}</div>
+                              {variant && <div style={{fontSize:12,color:"var(--muted)",marginTop:2}}>⎇ {variant.label}</div>}
+                            </div>
+                          </div>
+                          <button className="icon-btn" onClick={() => delStoreEntry(prod, variant, entry.id)}>🗑</button>
+                        </div>
+                        <div style={{marginTop:8}}>
+                          <div style={{fontSize:17,fontWeight:700,color:"var(--green)"}}>{brl>0?fmtAmt(brl,base):"— taxa não conf."}</div>
+                          {showSec && <div style={{fontSize:12,color:"var(--muted)"}}>{fmtAmt(entry.amount, entry.currency)}</div>}
+                          {entry.link && <a href={entry.link} target="_blank" rel="noopener noreferrer" className="spi-link">↗ Ver link</a>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div className="add-to-store-btn" onClick={() => openAdd(st.id)}>
+                    <span style={{fontSize:16}}>＋</span> Adicionar produto
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <button className="fab" onClick={() => setShowAddStore(true)}>＋</button>
+
+      {/* ADD STORE */}
+      {showAddStore && (
+        <Sheet title="Nova Loja" onClose={() => setShowAddStore(false)}
+          footer={<><button className="btn btn-s" onClick={() => setShowAddStore(false)}>Cancelar</button><button className="btn btn-p" onClick={addStore}>Adicionar</button></>}>
+          <div className="fg"><label className="fl">Nome</label><input className="fi" placeholder="Ex: Amazon US, Best Buy..." value={newStore.name} onChange={e=>setNewStore(s=>({...s,name:e.target.value}))} autoFocus /></div>
+          <div className="fg">
+            <label className="fl">Moeda da loja</label>
+            <select className="fs" value={newStore.currency} onChange={e=>setNewStore(s=>({...s,currency:e.target.value}))}>
+              {CURRENCIES.map(c => <option key={c} value={c}>{CURRENCY_FLAGS[c]} {c} — {CURRENCY_NAMES[c]}</option>)}
+            </select>
+          </div>
+          <div style={{fontSize:12,color:"var(--muted)",background:"var(--surf2)",borderRadius:10,padding:"10px 12px"}}>
+            A bandeira da loja é definida pela moeda selecionada.
+          </div>
+        </Sheet>
+      )}
+
+      {/* EDIT STORE */}
+      {showEditStore && (
+        <Sheet title="Editar Loja" onClose={() => setShowEditStore(null)}
+          footer={<>
+            <button className="btn btn-d" style={{flex:"none",padding:"14px 16px"}} onClick={() => { delStore(showEditStore.id); setShowEditStore(null); }}>🗑</button>
+            <button className="btn btn-s" onClick={() => setShowEditStore(null)}>Cancelar</button>
+            <button className="btn btn-p" onClick={() => saveStore(showEditStore)}>Salvar</button>
+          </>}>
+          <div className="fg"><label className="fl">Nome</label><input className="fi" value={showEditStore.name} onChange={e=>setShowEditStore(s=>({...s,name:e.target.value}))} autoFocus /></div>
+          <div className="fg">
+            <label className="fl">Moeda</label>
+            <select className="fs" value={showEditStore.currency} onChange={e=>setShowEditStore(s=>({...s,currency:e.target.value}))}>
+              {CURRENCIES.map(c => <option key={c} value={c}>{CURRENCY_FLAGS[c]} {c} — {CURRENCY_NAMES[c]}</option>)}
+            </select>
+          </div>
+        </Sheet>
+      )}
+
+      {/* ADD PRODUCT TO STORE */}
+      {showAddProduct && storeForSheet && (
+        <Sheet title={`${storeFlag(storeForSheet)} ${storeForSheet.name}`} onClose={() => setShowAddProduct(null)}
+          footer={<>
+            <button className="btn btn-s" onClick={() => setShowAddProduct(null)}>Cancelar</button>
+            <button className="btn btn-p" onClick={handleSave} disabled={!canSave} style={{opacity:canSave?1:.45}}>Salvar</button>
+          </>}>
+
+          <div style={{display:"flex",gap:8}}>
+            <button className={`btn ${apMode==="existing"?"btn-p":"btn-s"}`} style={{fontSize:13,padding:"10px 12px"}}
+              onClick={() => { setApMode("existing"); setApProd(null); setApVariant(null); setApNewVarL(""); setApSearch(""); }}>
+              📦 Da lista
+            </button>
+            <button className={`btn ${apMode==="new"?"btn-p":"btn-s"}`} style={{fontSize:13,padding:"10px 12px"}}
+              onClick={() => { setApMode("new"); setApProd(null); }}>
+              ✨ Novo
+            </button>
+          </div>
+
+          {apMode === "existing" ? (
+            !apProd ? (
+              <div className="fg">
+                <label className="fl">Buscar produto</label>
+                <input className="fi" placeholder="Nome ou categoria..." value={apSearch} onChange={e=>setApSearch(e.target.value)} autoFocus />
+                {filteredProds.length === 0 ? (
+                  <div style={{padding:14,textAlign:"center",color:"var(--muted)",fontSize:13}}>Nenhum encontrado</div>
+                ) : (
+                  <div className="prod-pick-list">
+                    {filteredProds.map(p => (
+                      <div key={p.id} className="prod-pick-item" onClick={() => { setApProd(p); setApVariant(null); setApNewVarL(""); }}>
+                        <div style={{fontWeight:600}}>{p.name}</div>
+                        {p.category && <div style={{fontSize:11,color:"var(--muted)"}}>{p.category}</div>}
+                        <div style={{fontSize:10,color:p.hasVariants?"var(--orange)":"var(--accent)",marginTop:2}}>{p.hasVariants?"⎇ com variações":"produto simples"}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <>
+                <div style={{display:"flex",alignItems:"center",gap:8,background:"var(--accentT)",border:"1px solid var(--accent)",borderRadius:12,padding:"10px 12px"}}>
+                  <span>📦</span>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:700,fontSize:14}}>{apProd.name}</div>
+                    {apProd.category && <div style={{fontSize:12,color:"var(--muted)"}}>{apProd.category}</div>}
+                  </div>
+                  <button style={{border:"none",background:"none",color:"var(--muted)",cursor:"pointer",fontSize:18}} onClick={() => { setApProd(null); setApSearch(""); }}>×</button>
+                </div>
+
+                {apProd.hasVariants && (
+                  <div className="fg">
+                    <label className="fl">Variação</label>
+                    {(apProd.variants||[]).length > 0 && !apVariant && (
+                      <div className="prod-pick-list" style={{marginBottom:6}}>
+                        {apProd.variants.map(v => (
+                          <div key={v.id} className="prod-pick-item" onClick={() => { setApVariant(v); setApNewVarL(""); }}>⎇ {v.label}</div>
+                        ))}
+                      </div>
+                    )}
+                    {apVariant ? (
+                      <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 12px",background:"var(--surf2)",borderRadius:10,border:"1px solid var(--border)"}}>
+                        <span style={{fontSize:13,fontWeight:600,flex:1}}>⎇ {apVariant.label}</span>
+                        <button style={{border:"none",background:"none",color:"var(--muted)",cursor:"pointer"}} onClick={() => setApVariant(null)}>×</button>
+                      </div>
+                    ) : (
+                      <input className="fi" placeholder="Ou nova variação..." value={apNewVarL} onChange={e=>setApNewVarL(e.target.value)} />
+                    )}
+                  </div>
+                )}
+              </>
+            )
+          ) : (
+            <>
+              <div className="fg"><label className="fl">Nome do produto</label><input className="fi" placeholder="Ex: iPhone 16 Pro" value={apNP.name} onChange={e=>setApNP(p=>({...p,name:e.target.value}))} autoFocus /></div>
+              <div className="fg"><label className="fl">Categoria (opcional)</label><input className="fi" placeholder="Ex: Smartphones" value={apNP.category} onChange={e=>setApNP(p=>({...p,category:e.target.value}))} /></div>
+              <div className="fg"><label className="fl">Variação (deixe em branco para produto simples)</label><input className="fi" placeholder="Ex: 256GB, Preto, Padrão..." value={apNP.varLabel} onChange={e=>setApNP(p=>({...p,varLabel:e.target.value}))} /></div>
+            </>
+          )}
+
+          {(apMode === "new" || (apMode === "existing" && apProd)) && (
+            <div style={{borderTop:"1px solid var(--border)",paddingTop:14}}>
+              <div style={{fontSize:11,color:"var(--muted)",fontWeight:600,letterSpacing:0.8,textTransform:"uppercase",marginBottom:10}}>Preço nessa loja</div>
+              <div className="fr" style={{marginBottom:8}}>
+                <div className="fg">
+                  <label className="fl">Valor</label>
+                  <PriceInput className="fi" value={apEntry.amount} onChange={v=>setApEntry(p=>({...p,amount:v}))} />
+                </div>
+                <div className="fg">
+                  <label className="fl">Moeda</label>
+                  <select className="fs" value={apEntry.currency} onChange={e=>setApEntry(p=>({...p,currency:e.target.value}))}>
+                    {CURRENCIES.map(c => <option key={c} value={c}>{CURRENCY_FLAGS[c]} {c}</option>)}
+                  </select>
+                </div>
+              </div>
+              <ConvPreview amount={apEntry.amount} currency={apEntry.currency} rates={rates} base={base} />
+              <div className="fg" style={{marginTop:8}}>
+                <label className="fl">Link de compra (opcional)</label>
+                <input className="fi" type="url" inputMode="url" placeholder="https://..." value={apEntry.link} onChange={e=>setApEntry(p=>({...p,link:e.target.value}))} />
+              </div>
+            </div>
+          )}
+        </Sheet>
+      )}
+    </div>
+  );
+}
+
+// ─── REPORT ──────────────────────────────────────────────────────────────────
+function Report({ products, stores, rates, convCurrency, base }) {
+  const rows = useMemo(() => {
+    const list = [];
+    products.forEach(prod => {
+      const priceRows = getPriceRows(prod);
+      priceRows.forEach(row => {
+        if (!row.prices.length) return;
+        const sorted = [...row.prices].map(e => {
+          const store = stores.find(s => s.id === e.storeId);
+          return { ...e, store, brl: toBase(e.amount, e.currency, rates, base), isFav: row.favorite === e.id };
+        }).sort((a,b) => a.brl - b.brl);
+        list.push({ prod, row, sorted, favId: row.favorite });
+      });
+    });
+    return list;
+  }, [products, stores, rates, base]);
+
+  const totalSaved = rows.reduce((s,{sorted}) => {
+    if (sorted.length < 2) return s;
+    return s + (sorted[sorted.length-1].brl - sorted[0].brl);
+  }, 0);
+
+  return (
+    <div className="page">
+      <div className="sec-hd"><div className="sec-title">Relatório</div><div className="sec-sub">Comparativo</div></div>
+      {totalSaved > 0 && (
+        <div style={{background:"var(--greenT)",border:"1px solid var(--green)",borderRadius:14,padding:"14px 16px",marginBottom:14,display:"flex",alignItems:"center",gap:10}}>
+          <div style={{fontSize:24}}>💡</div>
+          <div>
+            <div style={{fontSize:13,fontWeight:600,color:"var(--green)"}}>Economia potencial</div>
+            <div style={{fontSize:20,fontWeight:700}}>{fmtAmt(totalSaved,base)}</div>
+            <div style={{fontSize:12,color:"var(--muted)"}}>comprando sempre na loja mais barata</div>
+          </div>
+        </div>
+      )}
+      {rows.length === 0 && <div className="empty"><div className="empty-ico">📊</div><div className="empty-t">Sem dados</div><div className="empty-s">Adicione produtos com preços em múltiplas lojas</div></div>}
+      {rows.map(({ prod, row, sorted, favId }) => {
+        const diff = sorted.length > 1 ? sorted[sorted.length-1].brl - sorted[0].brl : 0;
+        const hasFav = !!favId;
+        return (
+          <div className="rep-card" key={prod.id+"-"+row.key}>
+            <div style={{padding:14,borderBottom:"1px solid var(--border)"}}>
+              <div style={{fontSize:15,fontWeight:700}}>{prod.name}</div>
+              {row.label && <div style={{fontSize:12,color:"var(--muted)",marginTop:2}}>⎇ {row.label}</div>}
+              {(diff > 0 || hasFav) && (
+                <div style={{marginTop:6,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                  {diff > 0 && <span style={{fontSize:12,color:"var(--green)",fontWeight:600}}>💰 Economize {fmtAmt(diff,base)} ({((diff/sorted[sorted.length-1].brl)*100).toFixed(0)}%)</span>}
+                  {hasFav && <span style={{fontSize:12,color:"var(--gold)",fontWeight:600}}>★ Favorito marcado</span>}
+                </div>
+              )}
+            </div>
+            {sorted.map((e,i) => {
+              const isWinner = i === 0;
+              const isFav = e.isFav;
+              // Background: fav gets gold tint, winner gets green tint
+              const rowBg = isFav ? "var(--goldT)" : isWinner ? "var(--greenT)" : "transparent";
+              const priceColor = isFav ? "var(--gold)" : isWinner ? "var(--green)" : "var(--text)";
+              return (
+                <div key={e.id} style={{display:"flex",alignItems:"center",gap:10,padding:"11px 14px",borderBottom:"1px solid var(--border)",background:rowBg}}>
+                  <div style={{fontSize:18}}>{storeFlag(e.store)}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.store?.name||"—"}</div>
+                    {e.currency !== base && <div style={{fontSize:11,color:"var(--muted)"}}>{fmtAmt(e.amount,e.currency)}</div>}
+                    <div style={{display:"flex",gap:6,marginTop:2,flexWrap:"wrap"}}>
+                      {isWinner && sorted.length > 1 && <span style={{fontSize:10,color:"var(--green)",fontWeight:700}}>✓ MAIS BARATO</span>}
+                      {isFav && <span style={{fontSize:10,color:"var(--gold)",fontWeight:700}}>★ FAVORITO</span>}
+                    </div>
+                  </div>
+                  <div style={{textAlign:"right",flexShrink:0}}>
+                    <div style={{fontSize:15,fontWeight:700,color:priceColor}}>{fmtAmt(e.brl,base)}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── CONFIG ──────────────────────────────────────────────────────────────────
+function Config({ rates, setRates, convCurrency, setConvCurrency, base, setBase }) {
+  const [fetchStatus, setFetchStatus] = useState(null);
+  const [fetchMsg,    setFetchMsg]    = useState("");
+  const [selecting,   setSelecting]   = useState(null);
+  const ALL_CONV = ["USD","EUR","JPY","GBP","PYG","ARS","CLP"];
+  const ALL_8 = ["BRL","USD","EUR","JPY","GBP","PYG","ARS","CLP"];
+
+  async function fetchRates() {
+    setFetchStatus("loading"); setFetchMsg("Buscando cotações...");
+    try {
+      // Try primary API (open.er-api — free, no key needed, has most currencies)
+      let rBRL = null;
+      let dateStr = "";
+
+      try {
+        const res = await fetch("https://open.er-api.com/v6/latest/BRL");
+        if (res.ok) {
+          const data = await res.json();
+          if (data.result === "success") {
+            rBRL = data.rates;
+            dateStr = data.time_last_update_utc
+              ? new Date(data.time_last_update_utc).toLocaleDateString("pt-BR") : "";
+          }
+        }
+      } catch(_) {}
+
+      // Fallback: frankfurter.app (ECB rates — no ARS/PYG but good for others)
+      // For ARS and PYG we use a secondary call to exchangerate.host
+      if (!rBRL) {
+        // Try exchangerate.host as full fallback
+        const res2 = await fetch("https://api.exchangerate-api.com/v4/latest/BRL");
+        if (!res2.ok) throw new Error("Sem resposta das APIs de câmbio");
+        const data2 = await res2.json();
+        rBRL = data2.rates;
+      }
+
+      // If primary worked but ARS or PYG missing, try secondary for those
+      const missing = ALL_CONV.filter(c => !rBRL[c]);
+      if (missing.length > 0) {
+        try {
+          const res3 = await fetch("https://api.exchangerate-api.com/v4/latest/BRL");
+          if (res3.ok) {
+            const data3 = await res3.json();
+            missing.forEach(c => { if (data3.rates[c]) rBRL[c] = data3.rates[c]; });
+          }
+        } catch(_) {}
+      }
+
+      // Convert: rBRL[c] = units of c per 1 BRL
+      // We need: how many BASE units per 1 c
+      const nr = {};
+      const baseInBRL = base === "BRL" ? 1 : (rBRL[base] ? 1/rBRL[base] : 1);
+      ALL_CONV.forEach(c => {
+        if (!rBRL[c]) return;
+        // 1 c = (1/rBRL[c]) BRL = (1/rBRL[c]) / (1/rBRL[base]) base units
+        const cInBRL = 1 / rBRL[c];
+        nr[c] = base === "BRL" ? cInBRL : cInBRL / baseInBRL;
+      });
+
+      setRates(prev => ({...prev,...nr}));
+      const found = ALL_CONV.filter(c => nr[c]);
+      const notFound = ALL_CONV.filter(c => !nr[c]);
+      let msg = "Atualizado" + (dateStr ? " em " + dateStr : "") + " ✓";
+      if (notFound.length) msg += ` (sem dados: ${notFound.join(", ")})`;
+      setFetchStatus("ok"); setFetchMsg(msg);
+    } catch(e) { setFetchStatus("err"); setFetchMsg("Falha: "+(e.message||"sem conexão")); }
+  }
+
+  return (
+    <div className="page">
+      <div className="sec-title" style={{marginBottom:20}}>Conversão</div>
+      <div style={{marginBottom:24}}>
+        <div style={{fontSize:11,color:"var(--muted)",fontWeight:600,letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>Moedas</div>
+        <div style={{display:"flex",gap:10,marginBottom:12}}>
+          <button className={"cur-mode-btn"+(selecting==="base"?" active":"")}
+            onClick={() => setSelecting(s => s==="base"?null:"base")} style={{flex:1}}>
+            <div style={{fontSize:10,opacity:.7,marginBottom:2}}>BASE</div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
+              <span style={{fontSize:16}}>{CURRENCY_FLAGS[base]}</span><span style={{fontWeight:700}}>{base}</span>
+            </div>
+            <div style={{fontSize:10,color:"var(--muted)",marginTop:1}}>{CURRENCY_NAMES[base]}</div>
+          </button>
+          <div style={{display:"flex",alignItems:"center",color:"var(--muted)",fontSize:18}}>⇄</div>
+          <button className={"cur-mode-btn"+(selecting==="conv"?" active":"")}
+            onClick={() => setSelecting(s => s==="conv"?null:"conv")} style={{flex:1}}>
+            <div style={{fontSize:10,opacity:.7,marginBottom:2}}>CONVERSÃO</div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
+              <span style={{fontSize:16}}>{CURRENCY_FLAGS[convCurrency]}</span><span style={{fontWeight:700}}>{convCurrency}</span>
+            </div>
+            <div style={{fontSize:10,color:"var(--muted)",marginTop:1}}>{CURRENCY_NAMES[convCurrency]}</div>
+          </button>
+        </div>
+        {selecting && (
+          <>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:6}}>
+              {ALL_8.map(c => {
+                const isB=base===c, isC=convCurrency===c;
+                const isSel=selecting==="base"?isB:isC;
+                const isOth=selecting==="base"?isC:isB;
+                return (
+                  <button key={c} disabled={isOth}
+                    onClick={() => {
+                      if(selecting==="base"){setBase(c);if(convCurrency===c)setConvCurrency(base);}
+                      else{setConvCurrency(c);if(base===c)setBase(convCurrency);}
+                      setSelecting(null);
+                    }}
+                    style={{padding:"10px 4px",borderRadius:12,border:"1.5px solid",
+                      borderColor:isSel?"var(--accent)":"var(--border)",
+                      background:isSel?"var(--accentT)":"var(--surf2)",
+                      color:isSel?"var(--accent)":isOth?"var(--muted)":"var(--text)",
+                      cursor:isOth?"not-allowed":"pointer",opacity:isOth?0.4:1,
+                      display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
+                    <span style={{fontSize:20}}>{CURRENCY_FLAGS[c]}</span>
+                    <span style={{fontSize:11,fontWeight:700}}>{c}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{fontSize:11,color:"var(--muted)",textAlign:"center",marginBottom:4}}>
+              Selecionando: <strong style={{color:"var(--accent)"}}>{selecting==="base"?"Moeda Base":"Conversão"}</strong>
+            </div>
+          </>
+        )}
+      </div>
+
+      <div style={{marginBottom:24}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+          <div>
+            <div style={{fontSize:11,color:"var(--muted)",fontWeight:600,letterSpacing:1,textTransform:"uppercase"}}>Taxas</div>
+            <div style={{fontSize:11,color:"var(--muted)",marginTop:2}}>1 moeda → {base}</div>
+          </div>
+          <button className="fetch-btn" onClick={fetchRates} disabled={fetchStatus==="loading"}>
+            {fetchStatus==="loading"?<span className="spin">⟳</span>:"🌐"} Buscar
+          </button>
+        </div>
+        <div style={{fontSize:12,color:fetchStatus==="ok"?"var(--green)":fetchStatus==="err"?"var(--red)":"var(--muted)",marginBottom:10,minHeight:18}}>
+          {fetchStatus==="loading"&&<><span className="spin">⟳</span> </>}{fetchMsg||"Toque em Buscar para atualizar."}
+        </div>
+        {ALL_8.filter(c => c !== base).map(cur => {
+          const val    = rates[cur] || 0;
+          const isConv = cur === convCurrency;
+          const dec    = ["JPY","PYG","ARS","CLP"].includes(cur) ? 4 : 2;
+          return (
+            <div className="cfg-rate-row" key={cur}
+              style={{borderColor:isConv?"var(--accent)":undefined,background:isConv?"var(--accentT)":undefined}}>
+              <div style={{fontSize:22}}>{CURRENCY_FLAGS[cur]}</div>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:700,fontSize:13}}>
+                  {cur}{isConv&&<span style={{fontSize:10,color:"var(--accent)",marginLeft:6}}>● conv</span>}
+                </div>
+                <div style={{fontSize:11,color:"var(--muted)"}}>{CURRENCY_NAMES[cur]}</div>
+                <div style={{fontSize:11,color:"var(--muted)",marginTop:1}}>1 {cur} = {base} {val?val.toFixed(dec):"—"}</div>
+              </div>
+              <PriceInput className="cfg-rate-input" value={val||""} onChange={v=>setRates(r=>({...r,[cur]:v}))} placeholder={dec===4?"0,0000":"0,00"} />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── APP ─────────────────────────────────────────────────────────────────────
+function App() {
+  const [tab,          setTab]          = useState("dash");
+  const [dark,         setDark]         = useState(true);
+  const [products,     setProducts]     = useState(SEED_PRODUCTS);
+  const [stores,       setStores]       = useState(SEED_STORES);
+  const [base,         setBase]         = useState("BRL");
+  const [convCurrency, setConvCurrency] = useState("USD");
+  const [rates,        setRates]        = useState({USD:0,EUR:0,JPY:0,GBP:0,PYG:0,ARS:0,CLP:0});
+  const scrollRef = useRef(null);
+  const { toasts, add: addToast, dismiss } = useToasts();
+
+  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0; }, [tab]);
+  useEffect(() => {
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark?"#0e0e12":"#f5f5f8");
+    document.body.style.background = dark?"#0e0e12":"#f5f5f8";
+  }, [dark]);
+
+  const nav = [
+    { id:"dash",     ico:"🏠", label:"Início"    },
+    { id:"products", ico:"📦", label:"Produtos"  },
+    { id:"stores",   ico:"🏪", label:"Lojas"     },
+    { id:"report",   ico:"📊", label:"Relatório" },
+    { id:"conv",     ico:"💱", label:"Conversão" },
+  ];
+
+  return (
+    <>
+      <style>{buildStyles(dark)}</style>
+      <div className="shell">
+        <div className="topbar">
+          <div className="topbar-title">Paraguai<span> Price</span></div>
+          <div className="topbar-actions">
+            <div className="icon-round" onClick={() => setTab("conv")}
+              style={{fontSize:13,fontWeight:700,color:"var(--accent)",width:"auto",padding:"0 10px",borderRadius:20,cursor:"pointer"}}>
+              {CURRENCY_FLAGS[base]} {base} → {CURRENCY_FLAGS[convCurrency]} {convCurrency}
+            </div>
+            <div className="icon-round" style={{width:36,cursor:"pointer"}} onClick={() => setDark(d=>!d)}>{dark?"☀️":"🌙"}</div>
+          </div>
+        </div>
+
+        <ToastContainer toasts={toasts} dismiss={dismiss} />
+
+        <div className="scroll" ref={scrollRef}>
+          {tab==="dash"     && <Dashboard products={products} stores={stores} rates={rates} convCurrency={convCurrency} base={base} />}
+          {tab==="products" && <Products  products={products} setProducts={setProducts} stores={stores} setStores={setStores} rates={rates} base={base} />}
+          {tab==="stores"   && <StoresTab products={products} setProducts={setProducts} stores={stores} setStores={setStores} rates={rates} convCurrency={convCurrency} base={base} addToast={addToast} />}
+          {tab==="report"   && <Report    products={products} stores={stores} rates={rates} convCurrency={convCurrency} base={base} />}
+          {tab==="conv"     && <Config    rates={rates} setRates={setRates} convCurrency={convCurrency} setConvCurrency={setConvCurrency} base={base} setBase={setBase} />}
+        </div>
+
+        <div className="bnav">
+          {nav.map(n => (
+            <button key={n.id} className={"bnav-btn"+(tab===n.id?" on":"")} onClick={() => setTab(n.id)}>
+              <span className="ico">{n.ico}</span>{n.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
