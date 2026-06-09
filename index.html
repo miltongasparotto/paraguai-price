@@ -3,17 +3,18 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="theme-color" content="#0e0e12" />
+  <meta name="theme-color" content="#f5f5f8" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>Paraguai Price v2.5</title>
+  <title>Paraguai Price v4.0</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <style>html,body,#root{height:100%;margin:0;padding:0}body{background:#0e0e12}</style>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <style>html,body,#root{height:100%;margin:0;padding:0}body{background:#f5f5f8}</style>
 </head>
 <body>
 <div id="root"></div>
@@ -115,8 +116,9 @@ function PriceInput({ value, onChange, className, placeholder }) {
   const [raw, setRaw] = useState(() => value ? fmtInput(value) : "");
 
   useEffect(() => {
-    if (!value) { setRaw(""); return; }
-    if (parseInput(raw) !== value) setRaw(fmtInput(value));
+    if (!value && value !== 0) { setRaw(""); return; }
+    const parsed = parseInput(raw);
+    if (Math.abs(parsed - value) > 0.001) setRaw(fmtInput(value));
   }, [value]);
 
   function handleChange(e) {
@@ -261,15 +263,20 @@ function buildStyles(dark) {
     /* inline store form */
     .inline-store-form{background:var(--accentT);border:1.5px solid var(--accent);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:12px}
 
-    /* toast */
-    .toast-wrap{position:fixed;top:calc(env(safe-area-inset-top,0px)+72px);left:50%;transform:translateX(-50%);
-      z-index:300;display:flex;flex-direction:column;gap:8px;pointer-events:none;width:calc(100% - 32px);max-width:398px}
-    .toast{background:var(--surf);border:1px solid var(--border);border-radius:12px;padding:12px 14px;
-      display:flex;align-items:center;gap:10px;box-shadow:0 8px 24px rgba(0,0,0,.3);pointer-events:auto;
-      animation:toastIn .2s ease}
-    @keyframes toastIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
-    .toast-warn{border-color:var(--gold)}
-    .toast-ok{border-color:var(--green)}
+    /* toast — centered on screen */
+    .toast-wrap{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+      z-index:500;display:flex;flex-direction:column;gap:10px;pointer-events:none;
+      width:calc(100% - 48px);max-width:320px}
+    .toast{background:var(--surf);border:1px solid var(--border);border-radius:16px;padding:16px 18px;
+      display:flex;align-items:flex-start;gap:12px;box-shadow:0 16px 48px rgba(0,0,0,.35);
+      pointer-events:auto;animation:toastIn .25s cubic-bezier(.34,1.56,.64,1)}
+    .toast-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.25);z-index:499;pointer-events:auto;
+      animation:fadeIn .2s ease}
+    @keyframes toastIn{from{opacity:0;transform:scale(.85)}to{opacity:1;transform:scale(1)}}
+    @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+    .toast-warn{border-color:var(--gold);background:var(--goldT)}
+    .toast-ok{border-color:var(--green);background:var(--greenT)}
+    .toast-confirm{border-color:var(--red);background:var(--redT)}
 
     /* report */
     .rep-card{background:var(--surf);border:1px solid var(--border);border-radius:14px;margin-bottom:10px;overflow:hidden}
@@ -366,20 +373,35 @@ function useToasts() {
   return { toasts, add, dismiss };
 }
 function ToastContainer({ toasts, dismiss }) {
+  if (!toasts.length) return null;
+  const icons = { warn:"⚠️", ok:"✅", confirm:"🗑", info:"ℹ️" };
   return (
-    <div className="toast-wrap">
-      {toasts.map(t => (
-        <div key={t.id} className={`toast ${t.type==="warn"?"toast-warn":t.type==="ok"?"toast-ok":""}`}
-          onClick={() => dismiss(t.id)} style={{cursor:"pointer"}}>
-          <span style={{fontSize:20,flexShrink:0}}>{t.type==="warn"?"⚠️":"✅"}</span>
-          <div style={{flex:1}}>
-            <div style={{fontWeight:600,fontSize:13}}>{t.title}</div>
-            {t.body && <div style={{fontSize:12,color:"var(--muted)",marginTop:2}}>{t.body}</div>}
+    <>
+      <div className="toast-backdrop" onClick={() => toasts.forEach(t => !t.confirm && dismiss(t.id))} />
+      <div className="toast-wrap">
+        {toasts.map(t => (
+          <div key={t.id} className={`toast toast-${t.type||"ok"}`}>
+            <span style={{fontSize:22,flexShrink:0,lineHeight:1,marginTop:1}}>{icons[t.type]||"✅"}</span>
+            <div style={{flex:1}}>
+              <div style={{fontWeight:700,fontSize:14}}>{t.title}</div>
+              {t.body && <div style={{fontSize:12,color:"var(--muted)",marginTop:3,lineHeight:1.4}}>{t.body}</div>}
+              {t.confirm && (
+                <div style={{display:"flex",gap:8,marginTop:12}}>
+                  <button onClick={()=>dismiss(t.id)}
+                    style={{flex:1,padding:"9px 0",borderRadius:9,background:"var(--surf2)",border:"1px solid var(--border)",
+                      color:"var(--text)",fontSize:13,fontWeight:600,cursor:"pointer"}}>Cancelar</button>
+                  <button onClick={()=>{t.confirm();dismiss(t.id);}}
+                    style={{flex:1,padding:"9px 0",borderRadius:9,background:"var(--red)",border:"none",
+                      color:"#fff",fontSize:13,fontWeight:600,cursor:"pointer"}}>Excluir</button>
+                </div>
+              )}
+            </div>
+            {!t.confirm && <span onClick={()=>dismiss(t.id)}
+              style={{fontSize:18,color:"var(--muted)",cursor:"pointer",flexShrink:0,lineHeight:1,marginTop:1}}>×</span>}
           </div>
-          <span style={{fontSize:16,color:"var(--muted)"}}>×</span>
-        </div>
-      ))}
-    </div>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -411,27 +433,41 @@ function CameraSheet({ onCapture, onClose }) {
   const [error,      setError]      = useState(null);
 
   useEffect(() => {
-    startCamera(facingMode);
-    return () => stopStream();
+    let mounted = true;
+    startCamera(facingMode, mounted);
+    return () => { mounted = false; stopStream(); };
   }, [facingMode]);
 
   function stopStream() {
     setStream(prev => { if (prev) prev.getTracks().forEach(t => t.stop()); return null; });
   }
 
-  async function startCamera(facing) {
+  const [loading, setLoading] = useState(false);
+  async function startCamera(facing, mounted = true) {
     stopStream();
     setError(null);
     setCaptured(null);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError(location.protocol !== 'https:'
+        ? 'Câmera requer HTTPS. Acesse pelo link do GitHub Pages ou use a opção Galeria.'
+        : 'Câmera não suportada neste dispositivo.');
+      return;
+    }
+    setLoading(true);
     try {
       const s = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: facing, width:{ideal:1280}, height:{ideal:720} }
+        video: { facingMode: { ideal: facing }, width:{ideal:1280}, height:{ideal:720} }
       });
+      if (!mounted) { s.getTracks().forEach(t => t.stop()); return; }
       setStream(s);
       if (videoRef.current) { videoRef.current.srcObject = s; videoRef.current.play(); }
     } catch(e) {
-      setError("Câmera não disponível: " + (e.message || e.name));
-    }
+      if (!mounted) return;
+      const msg = e.name === 'NotAllowedError' ? 'Permissão negada. Permita o acesso à câmera nas configurações do browser.'
+        : e.name === 'NotFoundError' ? 'Nenhuma câmera encontrada neste dispositivo.'
+        : 'Câmera não disponível: ' + (e.message || e.name);
+      setError(msg);
+    } finally { if (mounted) setLoading(false); }
   }
 
   function capture() {
@@ -488,6 +524,9 @@ function CameraSheet({ onCapture, onClose }) {
               <video ref={videoRef} autoPlay playsInline muted
                 style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}} />
               <canvas ref={canvasRef} style={{display:"none"}} />
+              {loading && <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,.5)"}}>
+                <div style={{color:"#fff",fontSize:13}}>⟳ Iniciando câmera...</div>
+              </div>}
             </div>
             <div style={{display:"flex",gap:10,marginTop:12,alignItems:"center"}}>
               <button onClick={flipCamera}
@@ -694,8 +733,9 @@ function Calculator({ rates, convCurrency, base, onClose }) {
 }
 
 // ─── DASHBOARD ───────────────────────────────────────────────────────────────
-function Dashboard({ products, stores, rates, convCurrency, base }) {
+function Dashboard({ products, stores, rates, convCurrency, base, addToast }) {
   const [showCalc, setShowCalc] = useState(false);
+  const [sortBy,   setSortBy]   = useState("name"); // name | price | fav
 
   const items = useMemo(() => {
     const list = [];
@@ -716,6 +756,13 @@ function Dashboard({ products, stores, rates, convCurrency, base }) {
     return list;
   }, [products, stores, rates, base]);
 
+  const sortedItems = useMemo(() => {
+    const arr = [...items];
+    if (sortBy === "price") arr.sort((a,b) => a.brl - b.brl);
+    else if (sortBy === "fav") arr.sort((a,b) => (b.isFav?1:0) - (a.isFav?1:0));
+    else arr.sort((a,b) => a.prod.name.localeCompare(b.prod.name, 'pt'));
+    return arr;
+  }, [items, sortBy]);
   const total = items.reduce((s, i) => s + i.brl, 0);
 
   return (
@@ -738,12 +785,38 @@ function Dashboard({ products, stores, rates, convCurrency, base }) {
         </div>
         <div style={{fontSize:12,color:"var(--muted)"}}>{items.length} {items.length===1?"item":"itens"}</div>
       </div>
+      {sortedItems.length > 0 && (
+        <div style={{display:"flex",justifyContent:"flex-end",marginBottom:8}}>
+          <button onClick={() => {
+            const lines = sortedItems.map(({prod,row,entry,store,brl}) =>
+              `${prod.name}${row.label?' ('+row.label+')':''}: ${fmtAmt(brl,base)} — ${store?.name||'?'}${entry.link?' '+entry.link:''}`);
+            const text = 'Lista Paraguai Price\n' + new Date().toLocaleDateString('pt-BR') + '\n\n' + lines.join('\n');
+            if (navigator.share) { navigator.share({ title:'Paraguai Price', text }).catch(()=>{}); }
+            else { navigator.clipboard?.writeText(text).then(()=>addToast({type:'ok',title:'Copiado!',body:'Lista copiada para a área de transferência.'})).catch(()=>addToast({type:'warn',title:'Erro',body:'Não foi possível copiar.'})); }
+          }}
+            style={{padding:"6px 14px",borderRadius:20,fontSize:12,fontWeight:600,cursor:"pointer",
+              border:"1px solid var(--border)",background:"var(--surf2)",color:"var(--muted)"}}>
+            📤 Compartilhar
+          </button>
+        </div>
+      )}
+      {items.length > 1 && (
+        <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
+          {[["name","A-Z"],["price","💰 Preço"],["fav","★ Fav"]].map(([v,l])=>(
+            <button key={v} onClick={()=>setSortBy(v)}
+              style={{padding:"5px 12px",borderRadius:20,fontSize:12,fontWeight:600,cursor:"pointer",border:"1px solid",
+                borderColor:sortBy===v?"var(--accent)":"var(--border)",
+                background:sortBy===v?"var(--accentT)":"var(--surf2)",
+                color:sortBy===v?"var(--accent)":"var(--muted)"}}>{l}</button>
+          ))}
+        </div>
+      )}
 
       {items.length === 0 && (
         <div className="empty"><div className="empty-ico">🛍️</div><div className="empty-t">Lista vazia</div><div className="empty-s">Adicione produtos na aba Produtos ou Lojas</div></div>
       )}
 
-      {items.map(({ prod, row, entry, store, brl, isFav, favIsExp }) => {
+      {sortedItems.map(({ prod, row, entry, store, brl, isFav, favIsExp }) => {
         const showSecondary = entry.currency !== base && brl > 0;
         const priceColor = isFav ? "var(--gold)" : "var(--green)";
         return (
@@ -785,7 +858,7 @@ function Dashboard({ products, stores, rates, convCurrency, base }) {
 }
 
 // ─── PRODUCTS TAB ────────────────────────────────────────────────────────────
-function Products({ products, setProducts, stores, setStores, rates, base }) {
+function Products({ products, setProducts, stores, setStores, rates, base, addToast }) {
   const [expanded,      setExpanded]      = useState(null);
   const [expandedV,     setExpandedV]     = useState({});
   const [showAddProd,   setShowAddProd]   = useState(false);
@@ -795,6 +868,7 @@ function Products({ products, setProducts, stores, setStores, rates, base }) {
   const [showAddEntry,  setShowAddEntry]  = useState(null);
   const [showEditEntry, setShowEditEntry] = useState(null);
   const [showCamera,    setShowCamera]    = useState(null); // {prodId, onSave}
+  const [search,        setSearch]        = useState("");
 
   // New product form
   const emptyEntry = () => ({ storeId:"", amount:0, currency:base, link:"" });
@@ -823,7 +897,7 @@ function Products({ products, setProducts, stores, setStores, rates, base }) {
       if (pr.id !== prod.id) return pr;
       const base = { ...pr, name:prod.name.trim(), category:prod.category.trim() };
       // If converting from simple → variant mode
-      if (!pr.hasVariants && prod.hasVariants) {
+      if (!pr.hasVariants && prod.hasVariants && prod._converting) {
         const varLabel = prod.convertVariantLabel?.trim() || "Padrão";
         return {
           ...base,
@@ -838,9 +912,17 @@ function Products({ products, setProducts, stores, setStores, rates, base }) {
     setShowEditProd(null);
   }
   function delProd(id) {
-    setProducts(p => p.filter(pr => pr.id !== id));
-    if (expanded === id) setExpanded(null);
-    setShowEditProd(null);
+    const prod = products.find(p => p.id === id);
+    addToast({
+      type: "confirm",
+      title: "Excluir produto?",
+      body: `"${prod?.name}" e todos os preços serão removidos.`,
+      confirm: () => {
+        setProducts(p => p.filter(pr => pr.id !== id));
+        if (expanded === id) setExpanded(null);
+        setShowEditProd(null);
+      }
+    });
   }
 
   // ── variant mutations ──
@@ -854,8 +936,17 @@ function Products({ products, setProducts, stores, setStores, rates, base }) {
     setShowEditVar(null);
   }
   function delVar(prodId, varId) {
-    setProducts(p => p.map(pr => pr.id !== prodId ? pr : { ...pr, variants:pr.variants.filter(v => v.id !== varId) }));
-    setShowEditVar(null);
+    const prod = products.find(p => p.id === prodId);
+    const v = prod?.variants?.find(v => v.id === varId);
+    addToast({
+      type: "confirm",
+      title: "Excluir variação?",
+      body: `"${v?.label}" e seus preços serão removidos.`,
+      confirm: () => {
+        setProducts(p => p.map(pr => pr.id !== prodId ? pr : { ...pr, variants:pr.variants.filter(vv => vv.id !== varId) }));
+        setShowEditVar(null);
+      }
+    });
   }
 
   // ── entry mutations (works for both simple and variant) ──
@@ -882,19 +973,26 @@ function Products({ products, setProducts, stores, setStores, rates, base }) {
     setShowEditEntry(null);
   }
   function delEntry(ctx, entryId) {
-    if (ctx.variantId) {
-      setProducts(p => p.map(pr => pr.id !== ctx.prodId ? pr : { ...pr,
-        variants: pr.variants.map(v => v.id !== ctx.variantId ? v : { ...v,
-          prices: v.prices.filter(e => e.id !== entryId),
-          favorite: v.favorite === entryId ? null : v.favorite
-        })
-      }));
-    } else {
-      setProducts(p => p.map(pr => pr.id !== ctx.prodId ? pr : { ...pr,
-        prices: (pr.prices||[]).filter(e => e.id !== entryId),
-        favorite: pr.favorite === entryId ? null : pr.favorite
-      }));
-    }
+    addToast({
+      type: "confirm",
+      title: "Excluir preço?",
+      body: "Este registro de preço será removido.",
+      confirm: () => {
+        if (ctx.variantId) {
+          setProducts(p => p.map(pr => pr.id !== ctx.prodId ? pr : { ...pr,
+            variants: pr.variants.map(v => v.id !== ctx.variantId ? v : { ...v,
+              prices: v.prices.filter(e => e.id !== entryId),
+              favorite: v.favorite === entryId ? null : v.favorite
+            })
+          }));
+        } else {
+          setProducts(p => p.map(pr => pr.id !== ctx.prodId ? pr : { ...pr,
+            prices: (pr.prices||[]).filter(e => e.id !== entryId),
+            favorite: pr.favorite === entryId ? null : pr.favorite
+          }));
+        }
+      }
+    });
   }
   function toggleFav(ctx, entryId) {
     if (ctx.variantId) {
@@ -952,12 +1050,25 @@ function Products({ products, setProducts, stores, setStores, rates, base }) {
         <div className="sec-title">Produtos</div>
         <div className="sec-sub">{products.length} {products.length===1?"item":"itens"}</div>
       </div>
+      {products.length > 3 && (
+        <div style={{position:"relative",marginBottom:12}}>
+          <span style={{position:"absolute",left:13,top:"50%",transform:"translateY(-50%)",fontSize:15,color:"var(--muted)"}}>🔍</span>
+          <input className="fi" style={{paddingLeft:38,marginBottom:0}}
+            placeholder="Buscar produto..."
+            value={search} onChange={e=>setSearch(e.target.value)} />
+          {search && <span onClick={()=>setSearch('')}
+            style={{position:"absolute",right:13,top:"50%",transform:"translateY(-50%)",
+              fontSize:17,color:"var(--muted)",cursor:"pointer",lineHeight:1}}>×</span>}
+        </div>
+      )}
 
       {products.length === 0 && (
         <div className="empty"><div className="empty-ico">📦</div><div className="empty-t">Nenhum produto</div><div className="empty-s">Toque em + para adicionar</div></div>
       )}
 
-      {products.map(prod => {
+      {products
+        .filter(prod => !search.trim() || prod.name.toLowerCase().includes(search.toLowerCase()) || (prod.category||'').toLowerCase().includes(search.toLowerCase()))
+        .map(prod => {
         const isExp = expanded === prod.id;
         // Summary: cheapest across all prices/variants
         const allPrices = prod.hasVariants
@@ -983,6 +1094,7 @@ function Products({ products, setProducts, stores, setStores, rates, base }) {
                 <div style={{fontSize:13,fontWeight:700,color:"var(--green)",flexShrink:0,marginRight:4}}>{fmtAmt(cheapBRL,base)}</div>
               )}
               <div onClick={e => { e.stopPropagation(); setShowEditProd({...prod,_converting:false,_origPrices:prod.prices||[]}); }} style={{padding:"4px 6px",color:"var(--muted)",fontSize:14,cursor:"pointer"}}>✏️</div>
+              <div onClick={e => { e.stopPropagation(); delProd(prod.id); }} style={{padding:"4px 6px",color:"var(--red)",fontSize:14,cursor:"pointer"}}>🗑</div>
               <span className={"chevron"+(isExp?" open":"")}>▾</span>
             </div>
 
@@ -1025,17 +1137,11 @@ function Products({ products, setProducts, stores, setStores, rates, base }) {
                     Nova variação
                   </div>
 
-                  <div style={{padding:"10px 14px",display:"flex",justifyContent:"flex-end"}}>
-                    <span style={{fontSize:12,color:"var(--red)",cursor:"pointer"}} onClick={() => delProd(prod.id)}>🗑 Remover produto</span>
-                  </div>
                 </div>
               ) : (
                 // ── SIMPLE MODE ──
                 <div className="variants-wrap">
                   {renderPriceList(prod.prices||[], prod.favorite, { prodId:prod.id, variantId:null })}
-                  <div style={{padding:"10px 14px",display:"flex",justifyContent:"flex-end"}}>
-                    <span style={{fontSize:12,color:"var(--red)",cursor:"pointer"}} onClick={() => delProd(prod.id)}>🗑 Remover produto</span>
-                  </div>
                 </div>
               )
             )}
@@ -1245,8 +1351,16 @@ function StoresTab({ products, setProducts, stores, setStores, rates, convCurren
     setShowEditStore(null);
   }
   function delStore(id) {
-    setStores(s => s.filter(x => x.id !== id));
-    if (expandedStore === id) setExpandedStore(null);
+    const st = stores.find(s => s.id === id);
+    addToast({
+      type: "confirm",
+      title: "Excluir loja?",
+      body: `"${st?.name}" será removida. Os preços cadastrados nela não serão excluídos.`,
+      confirm: () => {
+        setStores(s => s.filter(x => x.id !== id));
+        if (expandedStore === id) setExpandedStore(null);
+      }
+    });
   }
 
   function openAdd(storeId) {
@@ -1287,7 +1401,7 @@ function StoresTab({ products, setProducts, stores, setStores, rates, convCurren
   const filteredProds = useMemo(() => {
     if (!apSearch.trim()) return products;
     const q = apSearch.toLowerCase();
-    return products.filter(p => p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q));
+    return products.filter(p => p.name.toLowerCase().includes(q) || (p.category||'').toLowerCase().includes(q));
   }, [products, apSearch]);
 
   function handleSave() {
@@ -1633,10 +1747,10 @@ function Config({ rates, setRates, convCurrency, setConvCurrency, base, setBase 
   async function fetchRates() {
     setFetchStatus("loading"); setFetchMsg("Buscando cotações...");
     try {
-      // Try primary API (open.er-api — free, no key needed, has most currencies)
       let rBRL = null;
       let dateStr = "";
 
+      // Primary: open.er-api.com (free, no key)
       try {
         const res = await fetch("https://open.er-api.com/v6/latest/BRL");
         if (res.ok) {
@@ -1649,41 +1763,45 @@ function Config({ rates, setRates, convCurrency, setConvCurrency, base, setBase 
         }
       } catch(_) {}
 
-      // Fallback: frankfurter.app (ECB rates — no ARS/PYG but good for others)
-      // For ARS and PYG we use a secondary call to exchangerate.host
+      // Fallback: frankfurter.app (ECB — no ARS/PYG but reliable)
       if (!rBRL) {
-        // Try exchangerate.host as full fallback
-        const res2 = await fetch("https://api.exchangerate-api.com/v4/latest/BRL");
-        if (!res2.ok) throw new Error("Sem resposta das APIs de câmbio");
-        const data2 = await res2.json();
-        rBRL = data2.rates;
-      }
-
-      // If primary worked but ARS or PYG missing, try secondary for those
-      const missing = ALL_CONV.filter(c => !rBRL[c]);
-      if (missing.length > 0) {
         try {
-          const res3 = await fetch("https://api.exchangerate-api.com/v4/latest/BRL");
-          if (res3.ok) {
-            const data3 = await res3.json();
-            missing.forEach(c => { if (data3.rates[c]) rBRL[c] = data3.rates[c]; });
+          const res2 = await fetch("https://api.frankfurter.app/latest?base=BRL");
+          if (res2.ok) {
+            const data2 = await res2.json();
+            rBRL = data2.rates;
           }
         } catch(_) {}
       }
 
-      // Convert: rBRL[c] = units of c per 1 BRL
-      // We need: how many BASE units per 1 c
+      if (!rBRL) throw new Error("Sem resposta das APIs de câmbio");
+
+      // If primary worked but ARS or PYG missing, try exchangerate.host
+      const missing = ALL_CONV.filter(c => !rBRL[c]);
+      if (missing.length > 0) {
+        try {
+          const res3 = await fetch("https://open.er-api.com/v6/latest/USD");
+          if (res3.ok) {
+            const data3 = await res3.json();
+            // Convert: data3.rates are per USD; rBRL["USD"] gives USD per BRL
+            const usdPerBRL = rBRL["USD"];
+            if (usdPerBRL) {
+              missing.forEach(c => {
+                if (data3.rates[c]) rBRL[c] = data3.rates[c] * usdPerBRL;
+              });
+            }
+          }
+        } catch(_) {}
+      }
+
       const nr = {};
-      const baseInBRL = base === "BRL" ? 1 : (rBRL[base] ? 1/rBRL[base] : 1);
       ALL_CONV.forEach(c => {
         if (!rBRL[c]) return;
-        // 1 c = (1/rBRL[c]) BRL = (1/rBRL[c]) / (1/rBRL[base]) base units
         const cInBRL = 1 / rBRL[c];
-        nr[c] = base === "BRL" ? cInBRL : cInBRL / baseInBRL;
+        nr[c] = base === "BRL" ? cInBRL : (rBRL[base] ? cInBRL * rBRL[base] : cInBRL);
       });
 
       setRates(prev => ({...prev,...nr}));
-      const found = ALL_CONV.filter(c => nr[c]);
       const notFound = ALL_CONV.filter(c => !nr[c]);
       let msg = "Atualizado" + (dateStr ? " em " + dateStr : "") + " ✓";
       if (notFound.length) msg += ` (sem dados: ${notFound.join(", ")})`;
@@ -1725,8 +1843,16 @@ function Config({ rates, setRates, convCurrency, setConvCurrency, base, setBase 
                 return (
                   <button key={c} disabled={isOth}
                     onClick={() => {
-                      if(selecting==="base"){setBase(c);if(convCurrency===c)setConvCurrency(base);}
-                      else{setConvCurrency(c);if(base===c)setBase(convCurrency);}
+                      const newBase = selecting === "base" ? c : base;
+                      const newConv = selecting === "conv" ? c : convCurrency;
+                      // Avoid duplicates: swap if collision
+                      if (selecting === "base") {
+                        setBase(c);
+                        if (convCurrency === c) setConvCurrency(base);
+                      } else {
+                        setConvCurrency(c);
+                        if (base === c) setBase(convCurrency);
+                      }
                       setSelecting(null);
                     }}
                     style={{padding:"10px 4px",borderRadius:12,border:"1.5px solid",
@@ -1785,17 +1911,394 @@ function Config({ rates, setRates, convCurrency, setConvCurrency, base, setBase 
   );
 }
 
+// ─── LOCALSTORAGE HELPERS ─────────────────────────────────────────────────────
+const LS = {
+  KEY: "pp_data_v1",
+  load() {
+    try { const d = localStorage.getItem(this.KEY); return d ? JSON.parse(d) : null; }
+    catch { return null; }
+  },
+  save(data) {
+    try {
+      localStorage.setItem(this.KEY, JSON.stringify(data));
+    } catch(e) {
+      if (e.name === 'QuotaExceededError' || e.code === 22) {
+        // Try saving without photos to preserve data
+        try {
+          const slim = { ...data, products: (data.products||[]).map(p => ({ ...p, photo: undefined })) };
+          localStorage.setItem(this.KEY, JSON.stringify(slim));
+          console.warn('Paraguai Price: fotos removidas do armazenamento (limite atingido)');
+        } catch(_) {
+          console.error('Paraguai Price: falha ao salvar dados — armazenamento cheio');
+        }
+      }
+    }
+  },
+};
+
+function usePersistedState(key, defaultVal) {
+  const [val, setVal] = useState(() => {
+    const saved = LS.load();
+    return (saved && saved[key] !== undefined) ? saved[key] : defaultVal;
+  });
+  return [val, setVal];
+}
+
+// ─── GOOGLE AUTH + DRIVE SYNC ENGINE (padrão JuJu Store v2.5) ────────────────
+const GDRIVE_CLIENT_ID = "175753605665-qgci1gfo3o4co7r9j76voh94pmlq4klo.apps.googleusercontent.com";
+const GDRIVE_SCOPE     = "https://www.googleapis.com/auth/drive.appdata";
+const GDRIVE_FILENAME  = "paraguai-price-data.json";
+const GDRIVE_FIELDS    = "files(id,name)";
+const PP_TOKEN_KEY     = "pp_gdrive_token";
+const PP_USER_KEY      = "pp_gdrive_user";
+
+let _tokenClient = null;
+let _driveToken  = null;  // { access_token, expires_at }
+let _driveFileId = null;  // cached file id
+
+const gdrive = {
+  _initClient(onSuccess, onError) {
+    if (!window.google) { onError && onError("GSI não carregou"); return; }
+    _tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: GDRIVE_CLIENT_ID,
+      scope: GDRIVE_SCOPE,
+      callback: (resp) => {
+        if (resp.error) { onError && onError(resp.error); return; }
+        const token = {
+          access_token: resp.access_token,
+          expires_at:   Date.now() + (resp.expires_in - 60) * 1000,
+        };
+        _driveToken = token;
+        localStorage.setItem(PP_TOKEN_KEY, JSON.stringify(token));
+        onSuccess && onSuccess(token);
+      },
+    });
+  },
+
+  _getValidToken() {
+    if (_driveToken && _driveToken.expires_at > Date.now()) return _driveToken;
+    try {
+      const saved = JSON.parse(localStorage.getItem(PP_TOKEN_KEY));
+      if (saved && saved.expires_at > Date.now()) { _driveToken = saved; return saved; }
+    } catch {}
+    return null;
+  },
+
+  login(onSuccess, onError) {
+    this._initClient(async (token) => {
+      try {
+        const r    = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+          headers: { Authorization: "Bearer " + token.access_token }
+        });
+        const info = await r.json();
+        const user = { name: info.name, email: info.email, picture: info.picture };
+        localStorage.setItem(PP_USER_KEY, JSON.stringify(user));
+        onSuccess && onSuccess({ token, user });
+      } catch {
+        onSuccess && onSuccess({ token, user: null });
+      }
+    }, onError);
+    _tokenClient.requestAccessToken({ prompt: "select_account" });
+  },
+
+  autoLogin() {
+    const token = this._getValidToken();
+    if (!token) return null;
+    let user = null;
+    try { user = JSON.parse(localStorage.getItem(PP_USER_KEY)); } catch {}
+    return { token, user };
+  },
+
+  logout() {
+    if (_driveToken) {
+      try { google.accounts.oauth2.revoke(_driveToken.access_token, () => {}); } catch {}
+    }
+    _driveToken  = null;
+    _driveFileId = null;
+    localStorage.removeItem(PP_TOKEN_KEY);
+    localStorage.removeItem(PP_USER_KEY);
+  },
+
+  async _getOrCreateFileId(token) {
+    if (_driveFileId) return _driveFileId;
+    const search = await fetch(
+      `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name='${GDRIVE_FILENAME}'&fields=${GDRIVE_FIELDS}`,
+      { headers: { Authorization: "Bearer " + token.access_token } }
+    );
+    const data = await search.json();
+    if (data.files && data.files.length > 0) {
+      _driveFileId = data.files[0].id;
+      return _driveFileId;
+    }
+    const meta = await fetch("https://www.googleapis.com/drive/v3/files", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + token.access_token, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: GDRIVE_FILENAME, parents: ["appDataFolder"] })
+    });
+    const created = await meta.json();
+    _driveFileId  = created.id;
+    return _driveFileId;
+  },
+
+  async load() {
+    const token = this._getValidToken();
+    if (!token) return null;
+    try {
+      const search = await fetch(
+        `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name='${GDRIVE_FILENAME}'&fields=${GDRIVE_FIELDS}`,
+        { headers: { Authorization: "Bearer " + token.access_token } }
+      );
+      const data = await search.json();
+      if (!data.files || data.files.length === 0) return null;
+      _driveFileId = data.files[0].id;
+      const content = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${_driveFileId}?alt=media`,
+        { headers: { Authorization: "Bearer " + token.access_token } }
+      );
+      return await content.json();
+    } catch { return null; }
+  },
+
+  async save(payload) {
+    const token = this._getValidToken();
+    if (!token) return false;
+    try {
+      const fileId   = await this._getOrCreateFileId(token);
+      const body     = JSON.stringify(payload);
+      const boundary = "pp_boundary_42";
+      const multipart =
+        `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n` +
+        `${JSON.stringify({ name: GDRIVE_FILENAME })}\r\n` +
+        `--${boundary}\r\nContent-Type: application/json\r\n\r\n` +
+        `${body}\r\n--${boundary}--`;
+      await fetch(
+        `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`,
+        {
+          method: "PATCH",
+          headers: {
+            Authorization: "Bearer " + token.access_token,
+            "Content-Type": `multipart/related; boundary=${boundary}`,
+          },
+          body: multipart,
+        }
+      );
+      return true;
+    } catch { return false; }
+  },
+};
+// ─── FIM ENGINE ───────────────────────────────────────────────────────────────
+
+// ─── LOGIN SCREEN ─────────────────────────────────────────────────────────────
+function LoginScreen({ onLogin, dark }) {
+  const [loading, setLoading] = useState(false);
+  const [erro,    setErro]    = useState("");
+  const bg  = dark ? "#0e0e12" : "#f5f5f8";
+  const col = dark ? "#ebebf5" : "#111118";
+
+  function handleLogin() {
+    setLoading(true); setErro("");
+    gdrive.login(
+      ({ token, user }) => { setLoading(false); onLogin({ token, user }); },
+      (err) => { setLoading(false); setErro("Não foi possível fazer login. Tente novamente."); console.error(err); }
+    );
+  }
+
+  return (
+    <div style={{height:"100dvh",background:bg,display:"flex",flexDirection:"column",
+      alignItems:"center",justifyContent:"center",padding:24,maxWidth:430,margin:"0 auto"}}>
+      <div style={{fontSize:64,marginBottom:8}}>🛍️</div>
+      <div style={{fontSize:26,fontWeight:800,letterSpacing:-0.5,color:col,marginBottom:4}}>
+        Paraguai <span style={{color:"#5b52f0"}}>Price</span>
+      </div>
+      <div style={{fontSize:13,color:"#8888aa",marginBottom:40,textAlign:"center",lineHeight:1.6}}>
+        Compare preços Brasil × Paraguai.<br/>Dados salvos no seu Google Drive.
+      </div>
+
+      <div style={{background:dark?"#17171d":"#fff",borderRadius:24,padding:28,width:"100%",maxWidth:340,
+        boxShadow:"0 8px 40px rgba(91,82,240,.15)",textAlign:"center",border:dark?"1px solid #2a2a38":"none"}}>
+        <div style={{fontSize:16,fontWeight:800,color:col,marginBottom:6}}>Bem-vindo! 👋</div>
+        <div style={{fontSize:13,color:"#8888aa",marginBottom:24,lineHeight:1.5}}>
+          Faça login com sua conta Google para acessar seus dados em qualquer dispositivo.
+        </div>
+
+        <button onClick={handleLogin} disabled={loading}
+          style={{display:"flex",alignItems:"center",justifyContent:"center",gap:10,
+            width:"100%",padding:"13px 20px",borderRadius:14,
+            background: loading ? (dark?"#1f1f28":"#f3f4f6") : (dark?"#1f1f28":"#fff"),
+            border: dark ? "2px solid #2a2a38" : "2px solid #e5e7eb",
+            cursor: loading ? "not-allowed" : "pointer",
+            fontFamily:"inherit",fontWeight:800,fontSize:14,color:col,
+            boxShadow:"0 2px 8px rgba(0,0,0,.08)",transition:"all .2s"}}>
+          {loading ? (
+            <><div style={{width:18,height:18,border:"2px solid #5b52f0",borderTopColor:"transparent",
+              borderRadius:"50%",animation:"spin 1s linear infinite"}}/> Entrando…</>
+          ) : (
+            <>
+              <svg width="18" height="18" viewBox="0 0 48 48">
+                <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+                <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+                <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+              </svg>
+              Entrar com Google
+            </>
+          )}
+        </button>
+
+        {erro && (
+          <div style={{marginTop:14,fontSize:12,color:"#EF4444",background:"#FEF2F2",
+            padding:"8px 12px",borderRadius:10}}>{erro}</div>
+        )}
+
+        <div style={{marginTop:20,fontSize:11,color:"#9CA3AF",lineHeight:1.5}}>
+          Seus dados ficam salvos na sua própria conta Google Drive, com acesso privado e exclusivo.
+        </div>
+      </div>
+      <div style={{marginTop:24,fontSize:11,color:"#8888aa",opacity:.6}}>v4.0</div>
+    </div>
+  );
+}
+
+// ─── SYNC INDICATOR ───────────────────────────────────────────────────────────
+function SyncIndicator({ status }) {
+  if (status === "idle") return null;
+  const map = {
+    saving:  { emoji:"☁️", label:"Salvando…",   color:"#F59E0B" },
+    saved:   { emoji:"✅", label:"Salvo",        color:"#10B981" },
+    error:   { emoji:"⚠️", label:"Erro sync",   color:"#EF4444" },
+    loading: { emoji:"🔄", label:"Carregando…",  color:"#8B5CF6" },
+  };
+  const s = map[status] || map.saved;
+  return (
+    <div style={{position:"fixed",bottom:"calc(68px + env(safe-area-inset-bottom,0px) + 8px)",
+      left:"50%",transform:"translateX(-50%)",
+      background:"rgba(255,255,255,.97)",backdropFilter:"blur(8px)",
+      borderRadius:20,padding:"6px 14px",display:"flex",alignItems:"center",
+      gap:6,boxShadow:"0 2px 16px rgba(0,0,0,.12)",zIndex:200,
+      fontSize:12,fontWeight:700,color:s.color,whiteSpace:"nowrap",
+      animation:"toastIn .25s cubic-bezier(.34,1.56,.64,1)"}}>
+      <span>{s.emoji}</span>{s.label}
+    </div>
+  );
+}
+
+// ─── USER MENU SHEET ──────────────────────────────────────────────────────────
+function UserMenuSheet({ user, onSignOut, onClose }) {
+  return (
+    <Sheet title="Minha conta" onClose={onClose}>
+      <div style={{display:"flex",alignItems:"center",gap:12,padding:"4px 0 8px"}}>
+        {user?.picture && <img src={user.picture} alt="" style={{width:48,height:48,borderRadius:"50%",flexShrink:0}} />}
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontWeight:700,fontSize:15}}>{user?.name || "Usuário"}</div>
+          <div style={{fontSize:12,color:"var(--muted)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{user?.email}</div>
+        </div>
+      </div>
+      <div style={{fontSize:12,color:"var(--muted)",background:"var(--surf2)",borderRadius:10,
+        padding:"10px 12px",lineHeight:1.6}}>
+        ☁️ Seus dados são salvos automaticamente no Google Drive a cada alteração.
+      </div>
+      <button onClick={onSignOut}
+        style={{width:"100%",padding:"13px",borderRadius:12,background:"var(--redT)",
+          border:"1px solid var(--red)",color:"var(--red)",fontSize:14,fontWeight:700,
+          cursor:"pointer",fontFamily:"inherit"}}>
+        Sair da conta
+      </button>
+    </Sheet>
+  );
+}
+
 // ─── APP ─────────────────────────────────────────────────────────────────────
+const NAV = [
+  { id:"dash",     ico:"🏠", label:"Início"    },
+  { id:"products", ico:"📦", label:"Produtos"  },
+  { id:"stores",   ico:"🏪", label:"Lojas"     },
+  { id:"report",   ico:"📊", label:"Relatório" },
+  { id:"conv",     ico:"💱", label:"Conversão" },
+];
+
 function App() {
-  const [tab,          setTab]          = useState("dash");
-  const [dark,         setDark]         = useState(true);
+  // ── auth ──
+  const [authUser,    setAuthUser]    = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [syncStatus,  setSyncStatus]  = useState("idle");
+  const syncDebounce = useRef(null);
+
+  // ── data ──
+  const [dark,         setDark]         = useState(false);
   const [products,     setProducts]     = useState(SEED_PRODUCTS);
   const [stores,       setStores]       = useState(SEED_STORES);
   const [base,         setBase]         = useState("BRL");
   const [convCurrency, setConvCurrency] = useState("USD");
-  const [rates,        setRates]        = useState({USD:0,EUR:0,JPY:0,GBP:0,PYG:0,ARS:0,CLP:0});
-  const scrollRef = useRef(null);
+  const [rates,        setRates]        = useState({ USD:0, EUR:0, JPY:0, GBP:0, PYG:0, ARS:0, CLP:0 });
+
+  // ── ui ──
+  const [tab,      setTab]      = useState("dash");
+  const [showMenu, setShowMenu] = useState(false);
+  const scrollRef  = useRef(null);
   const { toasts, add: addToast, dismiss } = useToasts();
+
+  // Aplica dados do Drive no estado
+  function applyData(data) {
+    if (!data) return;
+    if (data.products     !== undefined) setProducts(data.products);
+    if (data.stores       !== undefined) setStores(data.stores);
+    if (data.rates        !== undefined) setRates(data.rates);
+    if (data.base         !== undefined) setBase(data.base);
+    if (data.convCurrency !== undefined) setConvCurrency(data.convCurrency);
+    if (data.dark         !== undefined) setDark(data.dark);
+  }
+
+  // Auto-login ao montar
+  useEffect(() => {
+    const saved = gdrive.autoLogin();
+    if (saved) {
+      setAuthUser(saved);
+      setSyncStatus("loading");
+      gdrive.load().then(data => {
+        applyData(data);
+        setSyncStatus("idle");
+        setAuthLoading(false);
+      });
+    } else {
+      setAuthLoading(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Auto-save no Drive a cada alteração (debounce 1.5s)
+  useEffect(() => {
+    if (!authUser) return;
+    clearTimeout(syncDebounce.current);
+    setSyncStatus("saving");
+    syncDebounce.current = setTimeout(async () => {
+      const ok = await gdrive.save({ dark, products, stores, base, convCurrency, rates });
+      setSyncStatus(ok ? "saved" : "error");
+      setTimeout(() => setSyncStatus("idle"), 2500);
+    }, 1500);
+    return () => clearTimeout(syncDebounce.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dark, products, stores, base, convCurrency, rates]);
+
+  // Login callback
+  const handleLogin = React.useCallback(async ({ token, user }) => {
+    setAuthUser({ token, user });
+    setSyncStatus("loading");
+    const data = await gdrive.load();
+    applyData(data);
+    setSyncStatus("idle");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Logout
+  function handleSignOut() {
+    gdrive.logout();
+    setAuthUser(null);
+    setShowMenu(false);
+    // Reseta estado
+    setProducts(SEED_PRODUCTS); setStores(SEED_STORES);
+    setRates({ USD:0, EUR:0, JPY:0, GBP:0, PYG:0, ARS:0, CLP:0 });
+    setBase("BRL"); setConvCurrency("USD"); setDark(false);
+  }
 
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0; }, [tab]);
   useEffect(() => {
@@ -1803,17 +2306,18 @@ function App() {
     document.body.style.background = dark?"#0e0e12":"#f5f5f8";
   }, [dark]);
 
-  const nav = [
-    { id:"dash",     ico:"🏠", label:"Início"    },
-    { id:"products", ico:"📦", label:"Produtos"  },
-    { id:"stores",   ico:"🏪", label:"Lojas"     },
-    { id:"report",   ico:"📊", label:"Relatório" },
-    { id:"conv",     ico:"💱", label:"Conversão" },
-  ];
+  const styles = useMemo(() => buildStyles(dark), [dark]);
 
+  // Loading inicial (tentando auto-login)
+  if (authLoading) return null;
+
+  // Tela de login
+  if (!authUser) return (<><style>{styles}</style><LoginScreen onLogin={handleLogin} dark={dark} /></>);
+
+  // App principal
   return (
     <>
-      <style>{buildStyles(dark)}</style>
+      <style>{styles}</style>
       <div className="shell">
         <div className="topbar">
           <div className="topbar-title">Paraguai<span> Price</span></div>
@@ -1822,28 +2326,46 @@ function App() {
               style={{fontSize:13,fontWeight:700,color:"var(--accent)",width:"auto",padding:"0 10px",borderRadius:20,cursor:"pointer"}}>
               {CURRENCY_FLAGS[base]} {base} → {CURRENCY_FLAGS[convCurrency]} {convCurrency}
             </div>
-            <div className="icon-round" style={{width:36,cursor:"pointer"}} onClick={() => setDark(d=>!d)}>{dark?"☀️":"🌙"}</div>
+            <div className="icon-round" style={{width:36,cursor:"pointer",overflow:"hidden"}}
+              onClick={() => setShowMenu(true)}>
+              {authUser.user?.picture
+                ? <img src={authUser.user.picture} alt="" style={{width:36,height:36,borderRadius:"50%",objectFit:"cover"}} />
+                : <span style={{fontSize:18}}>👤</span>
+              }
+            </div>
+            <div className="icon-round" style={{width:36,cursor:"pointer"}} onClick={() => setDark(d=>!d)}>
+              {dark?"☀️":"🌙"}
+            </div>
           </div>
         </div>
 
         <ToastContainer toasts={toasts} dismiss={dismiss} />
+        <SyncIndicator status={syncStatus} />
 
         <div className="scroll" ref={scrollRef}>
-          {tab==="dash"     && <Dashboard products={products} stores={stores} rates={rates} convCurrency={convCurrency} base={base} />}
-          {tab==="products" && <Products  products={products} setProducts={setProducts} stores={stores} setStores={setStores} rates={rates} base={base} />}
+          {tab==="dash"     && <Dashboard products={products} stores={stores} rates={rates} convCurrency={convCurrency} base={base} addToast={addToast} />}
+          {tab==="products" && <Products  products={products} setProducts={setProducts} stores={stores} setStores={setStores} rates={rates} base={base} addToast={addToast} />}
           {tab==="stores"   && <StoresTab products={products} setProducts={setProducts} stores={stores} setStores={setStores} rates={rates} convCurrency={convCurrency} base={base} addToast={addToast} />}
           {tab==="report"   && <Report    products={products} stores={stores} rates={rates} convCurrency={convCurrency} base={base} />}
           {tab==="conv"     && <Config    rates={rates} setRates={setRates} convCurrency={convCurrency} setConvCurrency={setConvCurrency} base={base} setBase={setBase} />}
         </div>
 
         <div className="bnav">
-          {nav.map(n => (
+          {NAV.map(n => (
             <button key={n.id} className={"bnav-btn"+(tab===n.id?" on":"")} onClick={() => setTab(n.id)}>
               <span className="ico">{n.ico}</span>{n.label}
             </button>
           ))}
         </div>
       </div>
+
+      {showMenu && (
+        <UserMenuSheet
+          user={authUser.user}
+          onSignOut={handleSignOut}
+          onClose={() => setShowMenu(false)}
+        />
+      )}
     </>
   );
 }
